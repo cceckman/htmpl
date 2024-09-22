@@ -1,10 +1,17 @@
 #![allow(dead_code)]
 use std::ops::Deref;
 
-#[derive(Debug, thiserror::Error)]
+mod visit;
+use scraper::Html;
+
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
 enum Error {
     #[error("failed at template evaluation: {0}")]
     TemplateEval(String),
+    #[error("missing attribute: from element {0}, attribute {1}")]
+    MissingAttr(&'static str, &'static str),
+    #[error("missing query: from element {0}, query {1} is not in scope")]
+    MissingQuery(&'static str, String),
 }
 
 impl<T> From<Error> for Result<T, Error> {
@@ -13,25 +20,15 @@ impl<T> From<Error> for Result<T, Error> {
     }
 }
 
-/// Evaluate the provided template.
-///
-/// Can draw data from the provided database.
-fn evaluate(
-    _template: &str,
-    _db: impl Deref<Target = rusqlite::Connection>,
-) -> Result<String, Error> {
-    Error::TemplateEval("not implemented".to_owned()).into()
-}
-
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
     use uuid::Uuid;
 
-    const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
+    pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
 
-    fn make_test_db() -> rusqlite::Result<Connection> {
-        let conn = rusqlite::Connection::open_in_memory()?;
+    pub fn make_test_db() -> Connection {
+        let conn = rusqlite::Connection::open_in_memory().expect("failed to create test DB");
         conn.execute(
             r#"
 CREATE TABLE users
@@ -43,26 +40,15 @@ CREATE TABLE users
 );
             "#,
             params![],
-        )?;
+        )
+        .expect("failed to prepare test DB schema");
 
         let uuid: Uuid = CCECKMAN_UUID.parse().expect("invalid uuid");
         conn.execute(
             r#"INSERT INTO users (uuid, name) VALUES (?, ?)"#,
             params![uuid.to_string(), "cceckman"],
-        )?;
-        Ok(conn)
-    }
-
-    #[test]
-    fn insert_single_value() {
-        let db = make_test_db().expect("could not get test DB");
-        const TEMPLATE: &str = r#"
-<htmpl-query name="q">
-SELECT uuid FROM users WHERE name = "cceckman" LIMIT 1;
-</htmpl-query>
-<htmpl-insert from="q" name="uuid" />
-        "#;
-        let result: String = crate::evaluate(TEMPLATE, &db).expect("failed to evaluate template");
-        assert_eq!(result.trim(), CCECKMAN_UUID);
+        )
+        .expect("failed to prepare test DB content");
+        conn
     }
 }
