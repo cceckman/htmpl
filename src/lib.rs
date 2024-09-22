@@ -12,6 +12,12 @@ enum Error {
     MissingAttr(&'static str, &'static str),
     #[error("missing query: from element {0}, query {1} is not in scope")]
     MissingQuery(&'static str, String),
+    #[error("incorrect cardinality: from element {0}, query {1} returned {2} rows, wanted {3}")]
+    Cardinality(&'static str, String, usize, usize),
+    #[error("invalid column: from element {0}, query {1} has columns {2}, wanted {3}")]
+    MissingColumn(&'static str, String, String, String),
+    #[error("invalid column: from element {0}, query {1} has columns {2}, wanted one column")]
+    NoDefaultColumn(&'static str, String, String),
 }
 
 impl<T> From<Error> for Result<T, Error> {

@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ego_tree::{NodeId, NodeRef};
+use ego_tree::{NodeId, NodeMut};
 use scraper::{html, Node};
 
 use crate::Error;
@@ -35,7 +35,7 @@ struct VariableTable(HashMap<String, Binding>);
 
 impl VariableTable {
     /// Look up the variable.
-    fn get<'a>(&'a self, name: impl AsRef<str>) -> Option<&'a QueryResult> {
+    fn get(&self, name: impl AsRef<str>) -> Option<&QueryResult> {
         self.0.get(name.as_ref()).map(|v| &v.result)
     }
 
@@ -55,10 +55,99 @@ impl VariableTable {
     }
 }
 
-fn do_query(_scopes: &[Scope]) -> Result<QueryResult, crate::Error> {
+fn do_query(_vars: &VariableTable) -> Result<QueryResult, crate::Error> {
     Ok(vec![[("query".to_owned(), "unimplemented".to_owned())]
         .into_iter()
         .collect::<HashMap<String, _>>()])
+}
+
+/// Visit a node in the tree.
+/// Returns true if recursion is required.
+fn visit(
+    mut nm: NodeMut<'_, Node>,
+    vars: &mut VariableTable,
+    current_scope: &mut Scope,
+) -> Result<bool, Error> {
+    if let Node::Element(element) = nm.value() {
+        match element.name.local.as_ref() {
+            "htmpl-insert" => {
+                let query = element
+                    .attr("query")
+                    .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
+                let result = vars
+                    .get(query)
+                    .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
+                // Cannot flatten results.
+                if result.len() != 1 {
+                    return Err(Error::Cardinality(
+                        "htmpl-insert",
+                        query.to_owned(),
+                        result.len(),
+                        1,
+                    ));
+                }
+                let result = &result[0];
+                let fmt_columns = || {
+                    format!(
+                        "\"{}\"",
+                        result
+                            .iter()
+                            .map(|(k, _v)| k.to_owned())
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    )
+                };
+
+                // Extract the relevant column
+                let value = if let Some(v) = element.attr("column") {
+                    result.get(v).ok_or_else(|| {
+                        Error::MissingColumn(
+                            "htmpl-insert",
+                            query.to_owned(),
+                            fmt_columns(),
+                            v.to_owned(),
+                        )
+                    })?
+                } else {
+                    (if result.len() == 1 {
+                        result.iter().next().map(|(_k, v)| v)
+                    } else {
+                        None
+                    })
+                    .ok_or_else(|| {
+                        Error::NoDefaultColumn("htmpl-insert", query.to_owned(), fmt_columns())
+                    })?
+                };
+                // TODO: Just replacing with text for now.
+                *nm.value() = Node::Text(scraper::node::Text {
+                    text: value.parse().unwrap(),
+                });
+
+                // Don't recurse
+                Ok(false)
+            }
+            "htmpl-query" => {
+                // TODO: Can we add line number information?
+                let name = element
+                    .attr("name")
+                    .ok_or(crate::Error::MissingAttr("htmpl-query", "name"))?;
+                let result = do_query(vars)?;
+                current_scope.push(name.to_owned());
+                vars.bind_shadow(name, result);
+
+                // We've performed the side effects of htmpl-query.
+                // Delete the node from the DOM.
+                nm.detach();
+
+                // We don't need to do anything with the children of this element, so:
+                Ok(false)
+            }
+            _ => Ok(true),
+        }
+    } else {
+        // All other node types, recurse to children.
+        Ok(true)
+    }
 }
 
 /// Parse the HTML tree, replacing htmpl elements and attributes.
@@ -73,7 +162,6 @@ pub fn evaluate_template(s: impl AsRef<str>) -> Result<String, crate::Error> {
     work_stack.push(Step::Visit(h.tree.root().id()));
     // We modify the tree in-place as we go.
     // NodeIds are stable: a node can be detached/orphaned, but never removed.
-
     // Now work:
     // TODO: Replace this with a root.traverse() invocation? Is that the same?
     while let Some(step) = work_stack.pop() {
@@ -85,48 +173,25 @@ pub fn evaluate_template(s: impl AsRef<str>) -> Result<String, crate::Error> {
                 }
             }
             Step::Visit(node) => {
-                let n: NodeRef<'_, Node> =
-                    h.tree.get(node).expect("retrieved with invalid node ID");
-                if let Node::Element(element) = n.value() {
-                    match element.name.local.as_ref() {
-                        "htmpl-insert" => {
-                            let query = element
-                                .attr("query")
-                                .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
-                            let _result = vars
-                                .get(query)
-                                .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
-                            // TODO: Extract columns, actually replace
-                        }
-                        "htmpl-query" => {
-                            // TODO: Can we add line number information?
-                            let name = element
-                                .attr("name")
-                                .ok_or(crate::Error::MissingAttr("htmpl-query", "name"))?;
-                            let result = do_query(&scopes)?;
-                            if let Some(s) = scopes.last_mut() {
-                                s.push(name.to_owned())
-                            }
-                            vars.bind_shadow(name, result);
-
-                            // We've performed the side effects of htmpl-query.
-                            // Delete the node from the DOM.
-                            let _ = h.tree.get_mut(node).map(|mut v| v.detach());
-
-                            // We don't need to do anything with the children of this element,
-                            // so:
-                            continue;
-                        }
-                        _ => {}
-                    }
+                {
+                    let nm: NodeMut<'_, Node> = h
+                        .tree
+                        .get_mut(node)
+                        .expect("retrieved with invalid node ID");
+                    visit(
+                        nm,
+                        &mut vars,
+                        scopes.last_mut().expect("scopes must always be nonempty"),
+                    )?;
                 }
+
                 // Other elements, or other node types: recurse.
                 // Create a new scope:
                 scopes.push(Default::default());
                 // Visit children, then exit the new scope;
                 // push those onto the work stack in reverse order.
                 work_stack.push(Step::ExitScope(node));
-                let mut child = n.last_child();
+                let mut child = h.tree.get(node).and_then(|v| v.last_child());
                 while let Some(c) = child {
                     work_stack.push(Step::Visit(c.id()));
                     child = c.prev_sibling();
@@ -149,7 +214,7 @@ mod tests {
     fn missing_query() {
         let _db = make_test_db();
         const TEMPLATE: &str = r#"
-<htmpl-insert query="q" column="uuid" />
+<htmpl-insert query="q" />
         "#;
         let result =
             evaluate_template(TEMPLATE).expect_err("succeeded at evaluating invalid template");
@@ -163,7 +228,7 @@ mod tests {
 <htmpl-query name="q">
 SELECT uuid FROM users WHERE name = "cceckman" LIMIT 1;
 </htmpl-query>
-<htmpl-insert query="q" column="uuid" />
+<htmpl-insert query="q" />
         "#;
         let result: String = evaluate_template(TEMPLATE).expect("failed to evaluate template");
         assert_eq!(result.trim(), CCECKMAN_UUID);
