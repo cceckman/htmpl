@@ -2,8 +2,8 @@
 
 use std::collections::HashMap;
 
-use ego_tree::{NodeId, NodeMut};
-use scraper::{html, Node};
+use ego_tree::{NodeId, NodeMut, NodeRef};
+use scraper::{html, Element, ElementRef, Node};
 
 use crate::Error;
 
@@ -33,6 +33,9 @@ type Scope = Vec<String>;
 #[derive(Default, Debug)]
 struct VariableTable(HashMap<String, Binding>);
 
+/// Databases available for querying.
+type DbTable = rusqlite::Connection;
+
 impl VariableTable {
     /// Look up the variable.
     fn get(&self, name: impl AsRef<str>) -> Option<&QueryResult> {
@@ -55,85 +58,57 @@ impl VariableTable {
     }
 }
 
-fn do_query(_vars: &VariableTable) -> Result<QueryResult, crate::Error> {
-    Ok(vec![[("query".to_owned(), "unimplemented".to_owned())]
+/// Allow reborrowing a NodeMut as a NodeRef.
+fn node_ref<'a, T>(nm: &'a mut NodeMut<'_, T>) -> NodeRef<'a, T> {
+    let id = nm.id();
+    unsafe { nm.tree().get_unchecked(id) }
+}
+
+fn do_query(
+    element: ElementRef,
+    vars: &mut VariableTable,
+    current_scope: &mut Scope,
+    _dbs: &DbTable,
+) -> Result<(), crate::Error> {
+    let name = element
+        .attr("name")
+        .ok_or(crate::Error::MissingAttr("htmpl-query", "name"))?;
+
+    let result = vec![[("query".to_owned(), "unimplemented".to_owned())]
         .into_iter()
-        .collect::<HashMap<String, _>>()])
+        .collect::<HashMap<String, _>>()];
+
+    current_scope.push(name.to_owned());
+    vars.bind_shadow(name, result);
+    Ok(())
 }
 
 /// Visit a node in the tree.
 /// Returns true if recursion is required.
+/// TODO: Extract to a struct.
 fn visit(
     mut nm: NodeMut<'_, Node>,
     vars: &mut VariableTable,
     current_scope: &mut Scope,
+    dbs: &DbTable,
 ) -> Result<bool, Error> {
     if let Node::Element(element) = nm.value() {
         match element.name.local.as_ref() {
             "htmpl-insert" => {
-                let query = element
-                    .attr("query")
-                    .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
-                let result = vars
-                    .get(query)
-                    .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
-                // Cannot flatten results.
-                if result.len() != 1 {
-                    return Err(Error::Cardinality(
-                        "htmpl-insert",
-                        query.to_owned(),
-                        result.len(),
-                        1,
-                    ));
-                }
-                let result = &result[0];
-                let fmt_columns = || {
-                    format!(
-                        "\"{}\"",
-                        result
-                            .iter()
-                            .map(|(k, _v)| k.to_owned())
-                            .collect::<Vec<_>>()
-                            .join(",")
-                    )
-                };
-
-                // Extract the relevant column
-                let value = if let Some(v) = element.attr("column") {
-                    result.get(v).ok_or_else(|| {
-                        Error::MissingColumn(
-                            "htmpl-insert",
-                            query.to_owned(),
-                            fmt_columns(),
-                            v.to_owned(),
-                        )
-                    })?
-                } else {
-                    (if result.len() == 1 {
-                        result.iter().next().map(|(_k, v)| v)
-                    } else {
-                        None
-                    })
-                    .ok_or_else(|| {
-                        Error::NoDefaultColumn("htmpl-insert", query.to_owned(), fmt_columns())
-                    })?
-                };
+                let new_content = visit_insert(element, vars)?;
                 // TODO: Just replacing with text for now.
                 *nm.value() = Node::Text(scraper::node::Text {
-                    text: value.parse().unwrap(),
+                    text: new_content.parse().unwrap(),
                 });
 
-                // Don't recurse
                 Ok(false)
             }
             "htmpl-query" => {
+                let elem = ElementRef::wrap(node_ref(&mut nm))
+                    .expect("internal failure: already asserted node is-element");
+
                 // TODO: Can we add line number information?
-                let name = element
-                    .attr("name")
-                    .ok_or(crate::Error::MissingAttr("htmpl-query", "name"))?;
-                let result = do_query(vars)?;
-                current_scope.push(name.to_owned());
-                vars.bind_shadow(name, result);
+                let _ = do_query(elem, vars, current_scope, dbs)?;
 
                 // We've performed the side effects of htmpl-query.
                 // Delete the node from the DOM.
@@ -150,8 +125,62 @@ fn visit(
     }
 }
 
+/// Visit a node in the tree.
+/// Returns true if recursion is required.
+fn visit_insert<'a>(
+    element: &scraper::node::Element,
+    vars: &'a VariableTable,
+) -> Result<&'a str, Error> {
+    let query = element
+        .attr("query")
+        .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
+    let result = vars
+        .get(query)
+        .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
+    // Cannot flatten results.
+    if result.len() != 1 {
+        return Err(Error::Cardinality(
+            "htmpl-insert",
+            query.to_owned(),
+            result.len(),
+            1,
+        ));
+    }
+    let result = &result[0];
+    let fmt_columns = || {
+        format!(
+            "\"{}\"",
+            result
+                .iter()
+                .map(|(k, _v)| k.to_owned())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+
+    // Extract the relevant column
+    let value = if let Some(v) = element.attr("column") {
+        result.get(v).ok_or_else(|| {
+            Error::MissingColumn(
+                "htmpl-insert",
+                query.to_owned(),
+                fmt_columns(),
+                v.to_owned(),
+            )
+        })?
+    } else {
+        (if result.len() == 1 {
+            result.iter().next().map(|(_k, v)| v)
+        } else {
+            None
+        })
+        .ok_or_else(|| Error::NoDefaultColumn("htmpl-insert", query.to_owned(), fmt_columns()))?
+    };
+    Ok(value)
+}
+
 /// Parse the HTML tree, replacing htmpl elements and attributes.
-pub fn evaluate_template(s: impl AsRef<str>) -> Result<String, crate::Error> {
+pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, crate::Error> {
     // Tree to traverse:
     let mut h = html::Html::parse_fragment(s.as_ref());
     let mut vars = VariableTable::default();
@@ -182,6 +211,7 @@ pub fn evaluate_template(s: impl AsRef<str>) -> Result<String, crate::Error> {
                         nm,
                         &mut vars,
                         scopes.last_mut().expect("scopes must always be nonempty"),
+                        dbs,
                     )?;
                 }
 
@@ -212,25 +242,25 @@ mod tests {
 
     #[test]
     fn missing_query() {
-        let _db = make_test_db();
+        let db = make_test_db();
         const TEMPLATE: &str = r#"
 <htmpl-insert query="q" />
         "#;
         let result =
-            evaluate_template(TEMPLATE).expect_err("succeeded at evaluating invalid template");
+            evaluate_template(TEMPLATE, &db).expect_err("succeeded at evaluating invalid template");
         assert_eq!(result, Error::MissingQuery("htmpl-insert", "q".to_owned()));
     }
 
     #[test]
     fn insert_single_value() {
-        let _db = make_test_db();
+        let db = make_test_db();
         const TEMPLATE: &str = r#"
 <htmpl-query name="q">
 SELECT uuid FROM users WHERE name = "cceckman" LIMIT 1;
 </htmpl-query>
 <htmpl-insert query="q" />
         "#;
-        let result: String = evaluate_template(TEMPLATE).expect("failed to evaluate template");
+        let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
         assert_eq!(result.trim(), CCECKMAN_UUID);
     }
 }
