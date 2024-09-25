@@ -145,6 +145,27 @@ fn do_query(element: ElementRef, vars: &mut Variables, dbs: &DbTable) -> Result<
 fn visit(mut nm: NodeMut<'_, Node>, vars: &mut Variables, dbs: &DbTable) -> Result<bool, Error> {
     if let Node::Element(element) = nm.value() {
         match element.name.local.as_ref() {
+            "htmpl-foreach" => {
+                // TODO: OK, I need to think about this a little more cleverly.
+                // htmpl-foreach will need to repeatedly visit the subtree,
+                // and _add new elements_ duplicating its children, for each row.
+                //
+                // How do we represent that without simple recursion?
+                // - First, we should "remove" these children -- _orphan_ them.
+                // - Then, our bytecode needs to take ownership of the subtree;
+                //   and have a "visit(bindings, into, subtree)" for each row.
+                //
+                // I think this suggests a different structure for the bytecode:
+                // that we're copying / appending elements to a new tree,
+                // rather than modifying in-place.
+                let new_content = visit_insert(element, vars)?;
+                // TODO: Just replacing with text for now.
+                *nm.value() = Node::Text(scraper::node::Text {
+                    text: new_content.parse().unwrap(),
+                });
+
+                Ok(false)
+            }
             "htmpl-insert" => {
                 let new_content = visit_insert(element, vars)?;
                 // TODO: Just replacing with text for now.
@@ -274,22 +295,24 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
         match step {
             Step::ExitScope(_e) => vars.pop_scope(),
             Step::Visit(node) => {
-                {
+                let recurse = {
                     let nm: NodeMut<'_, Node> = h
                         .tree
                         .get_mut(node)
                         .expect("retrieved with invalid node ID");
-                    visit(nm, &mut vars, dbs)?;
-                }
-                // Enter a sub-scope to use for children.
-                vars.add_scope();
-                // Visit children, then exit the new scope;
-                // push those onto the work stack in reverse order.
-                work_stack.push(Step::ExitScope(node));
-                let mut child = h.tree.get(node).and_then(|v| v.last_child());
-                while let Some(c) = child {
-                    work_stack.push(Step::Visit(c.id()));
-                    child = c.prev_sibling();
+                    visit(nm, &mut vars, dbs)?
+                };
+                if recurse {
+                    // Enter a sub-scope to use for children.
+                    vars.add_scope();
+                    // Visit children, then exit the new scope;
+                    // push those onto the work stack in reverse order.
+                    work_stack.push(Step::ExitScope(node));
+                    let mut child = h.tree.get(node).and_then(|v| v.last_child());
+                    while let Some(c) = child {
+                        work_stack.push(Step::Visit(c.id()));
+                        child = c.prev_sibling();
+                    }
                 }
             }
         }
@@ -439,5 +462,21 @@ SELECT uuid FROM users;
             trimmed,
             format!("<div><div>{}</div>{}</div>", CCECKMAN_UUID, OTHER_UUID)
         );
+    }
+
+    #[test]
+    fn foreach_multiple() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">
+SELECT * FROM users;
+</htmpl-query>
+<htmpl-foreach query="q">
+<htmpl-insert query="q" column="name" /> <htmpl-insert query="q" column="uuid" />
+</htmpl-foreach>
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
+        assert!(result.contains(&format!("{} cceckman", CCECKMAN_UUID)));
+        assert!(result.contains(&format!("{} ddedkman", OTHER_UUID)));
     }
 }
