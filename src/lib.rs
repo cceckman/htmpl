@@ -61,6 +61,7 @@ mod tests {
     use uuid::Uuid;
 
     pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
+    pub const OTHER_UUID: &str = "6de21789-6279-416c-9025-d090d407bc8c";
 
     pub fn make_test_db() -> Connection {
         let conn = rusqlite::Connection::open_in_memory().expect("failed to create test DB");
@@ -80,8 +81,8 @@ CREATE TABLE users
 
         let uuid: Uuid = CCECKMAN_UUID.parse().expect("invalid uuid");
         conn.execute(
-            r#"INSERT INTO users (uuid, name) VALUES (?, ?)"#,
-            params![uuid.to_string(), "cceckman"],
+            r#"INSERT INTO users (uuid, name) VALUES (?, ?), (?, ?)"#,
+            params![uuid.to_string(), "cceckman", OTHER_UUID, "ddedkman"],
         )
         .expect("failed to prepare test DB content");
         conn

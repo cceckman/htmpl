@@ -42,23 +42,53 @@ struct VariableTable(HashMap<String, Binding>);
 /// Databases available for querying.
 type DbTable = rusqlite::Connection;
 
-impl VariableTable {
+#[derive(Debug)]
+struct Variables {
+    scopes: Vec<Scope>,
+    bindings: HashMap<String, Binding>,
+}
+
+impl Default for Variables {
+    fn default() -> Self {
+        Self {
+            scopes: vec![Default::default()],
+            bindings: Default::default(),
+        }
+    }
+}
+
+impl Variables {
     /// Look up the variable.
     fn get(&self, name: impl AsRef<str>) -> Option<&QueryResult> {
-        self.0.get(name.as_ref()).map(|v| &v.result)
+        self.bindings.get(name.as_ref()).map(|v| &v.result)
     }
 
-    /// Add a variable binding, shadowing if it's already bound.
+    /// Add a variable binding to the current scope, shadowing if it's already bound.
     fn bind_shadow(&mut self, name: &str, result: QueryResult) {
-        let shadowed = self.0.remove(name).map(Box::new);
-        self.0.insert(name.to_owned(), Binding { result, shadowed });
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.push(name.to_owned());
+        }
+        let shadowed = self.bindings.remove(name).map(Box::new);
+        self.bindings
+            .insert(name.to_owned(), Binding { result, shadowed });
+    }
+
+    /// Enter a new scope.
+    fn add_scope(&mut self) {
+        self.scopes.push(Default::default())
     }
 
     /// Remove the current bindings of these variables, un-shadowing if shadowed.
-    fn pop_scope(&mut self, names: impl IntoIterator<Item = String>) {
-        for name in names {
-            if let Some(binding) = self.0.remove(&name).and_then(|v| v.shadowed.map(|v| *v)) {
-                self.0.insert(name, binding);
+    fn pop_scope(&mut self) {
+        if let Some(scope) = self.scopes.pop() {
+            for name in scope {
+                if let Some(binding) = self
+                    .bindings
+                    .remove(&name)
+                    .and_then(|v| v.shadowed.map(|v| *v))
+                {
+                    self.bindings.insert(name, binding);
+                }
             }
         }
     }
@@ -85,12 +115,7 @@ fn row_to_hash(
         .collect()
 }
 
-fn do_query(
-    element: ElementRef,
-    vars: &mut VariableTable,
-    _current_scope: &mut Scope,
-    dbs: &DbTable,
-) -> Result<(), Error> {
+fn do_query(element: ElementRef, vars: &mut Variables, dbs: &DbTable) -> Result<(), Error> {
     let name = element
         .attr("name")
         .ok_or(Error::MissingAttr("htmpl-query", "name"))?;
@@ -117,12 +142,7 @@ fn do_query(
 /// Visit a node in the tree.
 /// Returns true if recursion is required.
 /// TODO: Extract to a struct.
-fn visit(
-    mut nm: NodeMut<'_, Node>,
-    vars: &mut VariableTable,
-    current_scope: &mut Scope,
-    dbs: &DbTable,
-) -> Result<bool, Error> {
+fn visit(mut nm: NodeMut<'_, Node>, vars: &mut Variables, dbs: &DbTable) -> Result<bool, Error> {
     if let Node::Element(element) = nm.value() {
         match element.name.local.as_ref() {
             "htmpl-insert" => {
@@ -139,7 +159,7 @@ fn visit(
                     .expect("internal failure: already asserted node is-element");
 
                 // TODO: Can we add line number information?
-                do_query(elem, vars, current_scope, dbs)?;
+                do_query(elem, vars, dbs)?;
 
                 // We've performed the side effects of htmpl-query.
                 // Delete the node from the DOM.
@@ -158,7 +178,7 @@ fn visit(
 
 /// Visit a node in the tree.
 /// Returns true if recursion is required.
-fn visit_insert(element: &scraper::node::Element, vars: &VariableTable) -> Result<String, Error> {
+fn visit_insert(element: &scraper::node::Element, vars: &Variables) -> Result<String, Error> {
     let query = element
         .attr("query")
         .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
@@ -241,8 +261,7 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
     .one(s.as_ref());
     // let mut h = Html::parse_fragment(s.as_ref());
 
-    let mut vars = VariableTable::default();
-    let mut scopes: Vec<Scope> = vec![Default::default()];
+    let mut vars = Variables::default();
     let mut work_stack: Vec<Step> = Vec::default();
 
     // Start by pushing the top-level element(s) onto the work stack.
@@ -253,29 +272,17 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
     // TODO: Replace this with a root.traverse() invocation? Is that the same?
     while let Some(step) = work_stack.pop() {
         match step {
-            Step::ExitScope(_e) => {
-                // Get rid of the variables from this scope:
-                if let Some(v) = scopes.pop() {
-                    vars.pop_scope(v);
-                }
-            }
+            Step::ExitScope(_e) => vars.pop_scope(),
             Step::Visit(node) => {
                 {
                     let nm: NodeMut<'_, Node> = h
                         .tree
                         .get_mut(node)
                         .expect("retrieved with invalid node ID");
-                    visit(
-                        nm,
-                        &mut vars,
-                        scopes.last_mut().expect("scopes must always be nonempty"),
-                        dbs,
-                    )?;
+                    visit(nm, &mut vars, dbs)?;
                 }
-
-                // Other elements, or other node types: recurse.
-                // Create a new scope:
-                scopes.push(Default::default());
+                // Enter a sub-scope to use for children.
+                vars.add_scope();
                 // Visit children, then exit the new scope;
                 // push those onto the work stack in reverse order.
                 work_stack.push(Step::ExitScope(node));
@@ -317,7 +324,7 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
 mod tests {
     use super::*;
     use crate::{
-        tests::{make_test_db, CCECKMAN_UUID},
+        tests::{make_test_db, CCECKMAN_UUID, OTHER_UUID},
         Error,
     };
 
@@ -333,15 +340,104 @@ mod tests {
     }
 
     #[test]
-    fn insert_single_value() {
+    fn multi_column_requires_column_selection() {
         let db = make_test_db();
         const TEMPLATE: &str = r#"
 <htmpl-query name="q">
-SELECT uuid FROM users WHERE name = "cceckman" LIMIT 1;
+SELECT * FROM users WHERE name = "cceckman";
+</htmpl-query>
+<htmpl-insert query="q" />
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect_err("unexpected success");
+        if let Error::NoDefaultColumn("htmpl-insert", _, _) = result {
+        } else {
+            panic!("unexpected error: {}", result);
+        }
+    }
+
+    #[test]
+    fn error_on_invalid_column() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">
+SELECT * FROM users WHERE name = "cceckman";
+</htmpl-query>
+<htmpl-insert query="q" column="does-not-exist" />
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect_err("unexpected success");
+        if let Error::MissingColumn("htmpl-insert", _, _, _) = result {
+        } else {
+            panic!("unexpected error: {}", result);
+        }
+    }
+
+    #[test]
+    fn insert_named_column() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">
+SELECT * FROM users WHERE name = "cceckman";
+</htmpl-query>
+<htmpl-insert query="q" column="uuid" />
+        "#;
+        let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
+        assert_eq!(result.trim(), CCECKMAN_UUID);
+    }
+
+    #[test]
+    fn insert_default_column() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">
+SELECT uuid FROM users WHERE name = "cceckman";
 </htmpl-query>
 <htmpl-insert query="q" />
         "#;
         let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
         assert_eq!(result.trim(), CCECKMAN_UUID);
+    }
+
+    #[test]
+    fn insert_requires_single_row() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">
+SELECT uuid FROM users;
+</htmpl-query>
+<htmpl-insert query="q" />
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect_err("unexpected success");
+        if let Error::Cardinality("htmpl-insert", _, _, _) = result {
+        } else {
+            panic!("unexpected error: {}", result);
+        }
+    }
+
+    #[test]
+    fn shadow_inner_scope() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<div>
+    <htmpl-query name="q">
+    SELECT uuid FROM users WHERE name = "ddedkman";
+    </htmpl-query>
+    <div>
+        <htmpl-query name="q">
+        SELECT uuid FROM users WHERE name = "cceckman";
+        </htmpl-query>
+        <htmpl-insert query="q" />
+    </div>
+    <htmpl-insert query="q" />
+</div>
+        "#;
+        let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
+        let trimmed: String = result
+            .chars()
+            .filter(|v| !char::is_whitespace(*v))
+            .collect();
+        assert_eq!(
+            trimmed,
+            format!("<div><div>{}</div>{}</div>", CCECKMAN_UUID, OTHER_UUID)
+        );
     }
 }
