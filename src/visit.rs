@@ -1,7 +1,7 @@
 //! Visitor for an HTML tree.
 
 use crate::queries::{DbTable, Queries};
-use ego_tree::{NodeId, NodeMut, NodeRef};
+use ego_tree::{NodeId, NodeMut, NodeRef, Tree};
 use html5ever::{
     local_name, ns,
     serialize::{SerializeOpts, TraversalScope},
@@ -12,85 +12,61 @@ use scraper::{ElementRef, Node, Selector};
 
 use crate::Error;
 
-// Step in traversing the tree.
-enum Step {
-    /// Visit the provided element.
-    Visit(NodeId),
-    /// Exit the scope of the given element, dropping variables
-    ExitScope(NodeId),
-}
-
-/// Allow reborrowing a NodeMut as a NodeRef.
-fn node_ref<'a, T>(nm: &'a mut NodeMut<'_, T>) -> NodeRef<'a, T> {
-    let id = nm.id();
-    unsafe { nm.tree().get_unchecked(id) }
-}
-
-/// Visit a node in the tree.
-/// Returns true if recursion is required.
-/// TODO: Extract to a struct.
-fn visit(mut nm: NodeMut<'_, Node>, vars: &mut Queries) -> Result<bool, Error> {
-    if let Node::Element(element) = nm.value() {
-        match element.name.local.as_ref() {
-            "htmpl-foreach" => {
-                // TODO: OK, I need to think about this a little more cleverly.
-                // htmpl-foreach will need to repeatedly visit the subtree,
-                // and _add new elements_ duplicating its children, for each row.
-                //
-                // How do we represent that without simple recursion?
-                // - First, we should "remove" these children -- _orphan_ them.
-                // - Then, our bytecode needs to take ownership of the subtree;
-                //   and have a "visit(bindings, into, subtree)" for each row.
-                //
-                // I think this suggests a different structure for the bytecode:
-                // that we're copying / appending elements to a new tree,
-                // rather than modifying in-place.
-                let new_content = visit_insert(element, vars)?;
-                // TODO: Just replacing with text for now.
-                *nm.value() = Node::Text(scraper::node::Text {
-                    text: new_content.parse().unwrap(),
-                });
-
-                Ok(false)
-            }
-            "htmpl-insert" => {
-                let new_content = visit_insert(element, vars)?;
-                // TODO: Just replacing with text for now.
-                *nm.value() = Node::Text(scraper::node::Text {
-                    text: new_content.parse().unwrap(),
-                });
-
-                Ok(false)
-            }
-            "htmpl-query" => {
-                let elem = ElementRef::wrap(node_ref(&mut nm))
-                    .expect("internal failure: already asserted node is-element");
-
-                // TODO: Can we add line number information?
-                vars.do_query(elem)?;
-
-                // We've performed the side effects of htmpl-query.
-                // Delete the node from the DOM.
-                nm.detach();
-
-                // We don't need to do anything with the children of this element, so:
-                Ok(false)
-            }
-            _ => Ok(true),
-        }
+/// Recursive "visit" function.
+///
+/// Evaluates the source node in the provided context,
+/// adding elements under output_parent as needed.
+fn visit_recurse(
+    context: &mut Queries,
+    source: NodeRef<Node>,
+    output_parent: &mut NodeMut<Node>,
+) -> Result<(), Error> {
+    if let Some(eref) = ElementRef::wrap(source) {
+        visit_element(context, eref, output_parent)
     } else {
-        // All other node types, recurse to children.
-        Ok(true)
+        let mut new = output_parent.append(source.value().clone());
+        for child in source.children() {
+            visit_recurse(context, child, &mut new)?;
+        }
+        Ok(())
+    }
+}
+
+fn visit_element(
+    context: &mut Queries,
+    source: ElementRef,
+    output_parent: &mut NodeMut<Node>,
+) -> Result<(), Error> {
+    match source.value().name.local.as_ref() {
+        "htmpl-insert" => {
+            let content = visit_insert(context, source)?;
+            output_parent.append(Node::Text(scraper::node::Text {
+                text: content.into(),
+            }));
+            Ok(())
+        }
+        "htmpl-query" => context.do_query(source),
+        _ => {
+            // Insert self, then recurse in a new scope.
+            let mut new = output_parent.append(Node::Element(source.value().clone()));
+            context.push_scope();
+            for child in source.children() {
+                visit_recurse(context, child, &mut new)?;
+            }
+            context.pop_scope();
+            Ok(())
+        }
     }
 }
 
 /// Visit a node in the tree.
 /// Returns true if recursion is required.
-fn visit_insert(element: &scraper::node::Element, vars: &Queries) -> Result<String, Error> {
+fn visit_insert(context: &Queries, element: ElementRef) -> Result<String, Error> {
     let query = element
+        .value()
         .attr("query")
         .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
-    let result = vars
+    let result = context
         .get(query)
         .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
     // An insert cannot flatten results; the length has to be 1.
@@ -160,7 +136,7 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
     // ...doesn't work.
     use html5ever::namespace_url;
     use html5ever::tendril::TendrilSink;
-    let mut h = html5ever::driver::parse_fragment(
+    let h = html5ever::driver::parse_fragment(
         scraper::Html::new_fragment(),
         Default::default(),
         QualName::new(None, ns!(), local_name!("")),
@@ -169,48 +145,16 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
     .one(s.as_ref());
     // let mut h = Html::parse_fragment(s.as_ref());
 
-    let mut vars = Queries::new(dbs);
-    let mut work_stack: Vec<Step> = Vec::default();
+    let mut context = Queries::new(dbs);
+    let mut output = scraper::Html::new_fragment();
+    visit_recurse(&mut context, h.tree.root(), &mut output.tree.root_mut())?;
 
-    // Start by pushing the top-level element(s) onto the work stack.
-    work_stack.push(Step::Visit(h.tree.root().id()));
-    // We modify the tree in-place as we go.
-    // NodeIds are stable: a node can be detached/orphaned, but never removed.
-    // Now work:
-    // TODO: Replace this with a root.traverse() invocation? Is that the same?
-    while let Some(step) = work_stack.pop() {
-        match step {
-            Step::ExitScope(_e) => vars.pop_scope(),
-            Step::Visit(node) => {
-                let recurse = {
-                    let nm: NodeMut<'_, Node> = h
-                        .tree
-                        .get_mut(node)
-                        .expect("retrieved with invalid node ID");
-                    visit(nm, &mut vars)?
-                };
-                if recurse {
-                    // Enter a sub-scope to use for children.
-                    vars.push_scope();
-                    // Visit children, then exit the new scope;
-                    // push those onto the work stack in reverse order.
-                    work_stack.push(Step::ExitScope(node));
-                    let mut child = h.tree.get(node).and_then(|v| v.last_child());
-                    while let Some(c) = child {
-                        work_stack.push(Step::Visit(c.id()));
-                        child = c.prev_sibling();
-                    }
-                }
-            }
-        }
-    }
-
-    // The parsing routine synthesizes an <html> wrapping element.
+    // Scraper appears to synthesize an <html> wrapping element.
     // TODO: Make "this is a fragment" vs. "this is a whole-document" explicit,
     // so we do/don't strip the <html> element depending.
     // (Why does scraper add a root element?)
     // For now, we remove it here:
-    if let Some(root) = h.select(&Selector::parse("html").unwrap()).next() {
+    if let Some(root) = output.select(&Selector::parse("html").unwrap()).next() {
         // Lifted from scraper::Html::serialize(), but with different options.
         let mut buf = Vec::new();
         // TODO: Derferred (I/O) serialization?

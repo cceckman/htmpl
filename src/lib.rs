@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::io;
+use std::{borrow::Cow, io};
 
 mod queries;
 mod visit;
@@ -22,8 +22,10 @@ enum Error {
 
     #[error("SQL error: in query {0}: {1}")]
     Sql(String, rusqlite::Error),
-    #[error("Reserializing error: ")]
+    #[error("reserializing error: {0}")]
     Serialize(io::Error),
+    #[error("html parsing error: {0}")]
+    HtmlParse(Cow<'static, str>),
 }
 
 impl PartialEq for Error {
