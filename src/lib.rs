@@ -1,10 +1,8 @@
 #![allow(dead_code)]
-use std::ops::Deref;
 
 mod visit;
-use scraper::Html;
 
-#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+#[derive(Debug, thiserror::Error, PartialEq)]
 enum Error {
     #[error("failed at template evaluation: {0}")]
     TemplateEval(String),
@@ -18,6 +16,9 @@ enum Error {
     MissingColumn(&'static str, String, String, String),
     #[error("invalid column: from element {0}, query {1} has columns {2}, wanted one column")]
     NoDefaultColumn(&'static str, String, String),
+
+    #[error("SQL error: in query {0}: {1}")]
+    Sql(String, rusqlite::Error),
 }
 
 impl<T> From<Error> for Result<T, Error> {

@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use ego_tree::{NodeId, NodeMut, NodeRef};
-use scraper::{html, Element, ElementRef, Node};
+use rusqlite::{params, types::Value};
+use scraper::{html, ElementRef, Node};
 
 use crate::Error;
 
@@ -17,7 +18,7 @@ enum Step {
 
 /// Result of performing a database query:
 /// Rows, then column name -> values.
-type QueryResult = Vec<HashMap<String, String>>;
+type QueryResult = Vec<HashMap<String, Value>>;
 
 /// Variable binding.
 #[derive(Debug)]
@@ -64,21 +65,46 @@ fn node_ref<'a, T>(nm: &'a mut NodeMut<'_, T>) -> NodeRef<'a, T> {
     unsafe { nm.tree().get_unchecked(id) }
 }
 
+/// Decode a single row into a column->value hashmap.
+fn row_to_hash(
+    columns: &[impl AsRef<str>],
+    row: &rusqlite::Row,
+) -> rusqlite::Result<HashMap<String, Value>> {
+    columns
+        .iter()
+        .enumerate()
+        .map(|(i, name)| -> rusqlite::Result<(String, Value)> {
+            let v = row.get(i)?;
+            Ok((name.as_ref().to_owned(), v))
+        })
+        .collect()
+}
+
 fn do_query(
     element: ElementRef,
     vars: &mut VariableTable,
-    current_scope: &mut Scope,
-    _dbs: &DbTable,
-) -> Result<(), crate::Error> {
+    _current_scope: &mut Scope,
+    dbs: &DbTable,
+) -> Result<(), Error> {
     let name = element
         .attr("name")
-        .ok_or(crate::Error::MissingAttr("htmpl-query", "name"))?;
+        .ok_or(Error::MissingAttr("htmpl-query", "name"))?;
+    let note_err = |e| Error::Sql(name.to_owned(), e);
+    let content = element.text().collect::<Vec<_>>().join(" ");
 
-    let result = vec![[("query".to_owned(), "unimplemented".to_owned())]
-        .into_iter()
-        .collect::<HashMap<String, _>>()];
-
-    current_scope.push(name.to_owned());
+    let mut st = dbs
+        .prepare(&content)
+        .map_err(|e| Error::Sql(name.to_owned(), e))?;
+    let names: Vec<String> = (0..st.column_count())
+        .filter_map(|i| st.column_name(i).map(str::to_owned).ok())
+        .collect();
+    // TODO: Pass params from vars
+    let result: rusqlite::Result<QueryResult> = st
+        .query(params![])
+        .map_err(note_err)?
+        .mapped(|row| row_to_hash(&names, row))
+        .collect();
+    let result = result.map_err(note_err)?;
     vars.bind_shadow(name, result);
     Ok(())
 }
@@ -108,7 +134,7 @@ fn visit(
                     .expect("internal failure: already asserted node is-element");
 
                 // TODO: Can we add line number information?
-                let _ = do_query(elem, vars, current_scope, dbs)?;
+                do_query(elem, vars, current_scope, dbs)?;
 
                 // We've performed the side effects of htmpl-query.
                 // Delete the node from the DOM.
@@ -127,17 +153,14 @@ fn visit(
 
 /// Visit a node in the tree.
 /// Returns true if recursion is required.
-fn visit_insert<'a>(
-    element: &scraper::node::Element,
-    vars: &'a VariableTable,
-) -> Result<&'a str, Error> {
+fn visit_insert(element: &scraper::node::Element, vars: &VariableTable) -> Result<String, Error> {
     let query = element
         .attr("query")
         .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
     let result = vars
         .get(query)
         .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
-    // Cannot flatten results.
+    // An insert cannot flatten results; the length has to be 1.
     if result.len() != 1 {
         return Err(Error::Cardinality(
             "htmpl-insert",
@@ -158,8 +181,9 @@ fn visit_insert<'a>(
         )
     };
 
-    // Extract the relevant column
+    // Extract the relevant column: explicit, or implicit single column.
     let value = if let Some(v) = element.attr("column") {
+        // An explicit column was specified.
         result.get(v).ok_or_else(|| {
             Error::MissingColumn(
                 "htmpl-insert",
@@ -176,11 +200,27 @@ fn visit_insert<'a>(
         })
         .ok_or_else(|| Error::NoDefaultColumn("htmpl-insert", query.to_owned(), fmt_columns()))?
     };
-    Ok(value)
+    Ok(format_value(value))
+}
+
+fn format_value(v: &Value) -> String {
+    match v {
+        Value::Null => "null".to_owned(),
+        Value::Integer(i) => format!("{}", i),
+        Value::Real(f) => format!("{}", f),
+        Value::Text(t) => t.clone(),
+        Value::Blob(b) => format!(
+            "[{}]",
+            b.iter()
+                .map(|b| format!("{:2x}", b))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+    }
 }
 
 /// Parse the HTML tree, replacing htmpl elements and attributes.
-pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, crate::Error> {
+pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Error> {
     // Tree to traverse:
     let mut h = html::Html::parse_fragment(s.as_ref());
     let mut vars = VariableTable::default();
