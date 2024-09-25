@@ -2,6 +2,7 @@
 
 use std::io;
 
+mod queries;
 mod visit;
 
 #[derive(Debug, thiserror::Error)]
