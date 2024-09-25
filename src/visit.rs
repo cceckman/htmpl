@@ -3,8 +3,13 @@
 use std::collections::HashMap;
 
 use ego_tree::{NodeId, NodeMut, NodeRef};
+use html5ever::{
+    local_name, ns,
+    serialize::{SerializeOpts, TraversalScope},
+    QualName,
+};
 use rusqlite::{params, types::Value};
-use scraper::{html, ElementRef, Node};
+use scraper::{ElementRef, Node, Selector};
 
 use crate::Error;
 
@@ -221,8 +226,21 @@ fn format_value(v: &Value) -> String {
 
 /// Parse the HTML tree, replacing htmpl elements and attributes.
 pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Error> {
-    // Tree to traverse:
-    let mut h = html::Html::parse_fragment(s.as_ref());
+    // scraper::parse_fragment impugns an <html> element into the root, which isn't necessarily
+    // true for us.
+    // Try to parse without adding an <html>.
+    // ...doesn't work.
+    use html5ever::namespace_url;
+    use html5ever::tendril::TendrilSink;
+    let mut h = html5ever::driver::parse_fragment(
+        scraper::Html::new_fragment(),
+        Default::default(),
+        QualName::new(None, ns!(), local_name!("")),
+        Vec::new(),
+    )
+    .one(s.as_ref());
+    // let mut h = Html::parse_fragment(s.as_ref());
+
     let mut vars = VariableTable::default();
     let mut scopes: Vec<Scope> = vec![Default::default()];
     let mut work_stack: Vec<Step> = Vec::default();
@@ -269,7 +287,30 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
             }
         }
     }
-    Ok(h.html())
+
+    // The parsing routine synthesizes an <html> wrapping element.
+    // TODO: Make "this is a fragment" vs. "this is a whole-document" explicit,
+    // so we do/don't strip the <html> element depending.
+    // (Why does scraper add a root element?)
+    // For now, we remove it here:
+    if let Some(root) = h.select(&Selector::parse("html").unwrap()).next() {
+        // Lifted from scraper::Html::serialize(), but with different options.
+        let mut buf = Vec::new();
+        // TODO: Derferred (I/O) serialization?
+        html5ever::serialize(
+            &mut buf,
+            &root,
+            SerializeOpts {
+                scripting_enabled: false, // What does this do?
+                traversal_scope: TraversalScope::ChildrenOnly(None),
+                // traversal_scope: TraversalScope::IncludeNode,
+                create_missing_parent: false,
+            },
+        )
+        .map_err(Error::Serialize)?;
+        return Ok(String::from_utf8(buf).unwrap());
+    }
+    panic!("unexpected end of function: no root element");
 }
 
 #[cfg(test)]

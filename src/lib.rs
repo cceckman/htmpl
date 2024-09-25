@@ -1,8 +1,10 @@
 #![allow(dead_code)]
 
+use std::io;
+
 mod visit;
 
-#[derive(Debug, thiserror::Error, PartialEq)]
+#[derive(Debug, thiserror::Error)]
 enum Error {
     #[error("failed at template evaluation: {0}")]
     TemplateEval(String),
@@ -19,6 +21,32 @@ enum Error {
 
     #[error("SQL error: in query {0}: {1}")]
     Sql(String, rusqlite::Error),
+    #[error("Reserializing error: ")]
+    Serialize(io::Error),
+}
+
+impl PartialEq for Error {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::TemplateEval(l0), Self::TemplateEval(r0)) => l0 == r0,
+            (Self::MissingAttr(l0, l1), Self::MissingAttr(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::MissingQuery(l0, l1), Self::MissingQuery(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Cardinality(l0, l1, l2, l3), Self::Cardinality(r0, r1, r2, r3)) => {
+                l0 == r0 && l1 == r1 && l2 == r2 && l3 == r3
+            }
+            (Self::MissingColumn(l0, l1, l2, l3), Self::MissingColumn(r0, r1, r2, r3)) => {
+                l0 == r0 && l1 == r1 && l2 == r2 && l3 == r3
+            }
+            (Self::NoDefaultColumn(l0, l1, l2), Self::NoDefaultColumn(r0, r1, r2)) => {
+                l0 == r0 && l1 == r1 && l2 == r2
+            }
+            (Self::Sql(l0, l1), Self::Sql(r0, r1)) => l0 == r0 && l1 == r1,
+            (Self::Serialize(l0), Self::Serialize(r0)) => {
+                (l0.kind() == r0.kind()) && l0.to_string() == r0.to_string()
+            }
+            _ => false,
+        }
+    }
 }
 
 impl<T> From<Error> for Result<T, Error> {

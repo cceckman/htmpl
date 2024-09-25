@@ -419,6 +419,7 @@ dependencies = [
  "axum-extra",
  "chrono",
  "ego-tree",
+ "html5ever",
  "markdown",
  "rand",
  "rusqlite",
