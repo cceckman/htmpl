@@ -345,4 +345,39 @@ SELECT * FROM users;
             result
         );
     }
+
+    #[test]
+    fn foreach_empty() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">
+SELECT * FROM users WHERE name = "noone";
+</htmpl-query>
+<htmpl-foreach query="q">
+<htmpl-insert query="q" column="uuid" /> <htmpl-insert query="q" column="name" />
+</htmpl-foreach>
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
+        assert!(!result.contains(&format!("{} cceckman", CCECKMAN_UUID)));
+        assert!(!result.contains(&format!("{} ddedkman", OTHER_UUID)));
+    }
+
+    #[test]
+    fn query_parameters() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="get_uuid">
+SELECT uuid FROM users;
+</htmpl-query>
+<htmpl-foreach query="get_uuid">
+<htmpl-query name="get_name" param="get_uuid(uuid)">
+SELECT name FROM users WHERE uuid = ?;
+</htmpl-query>
+<htmpl-insert query="get_name" />
+</htmpl-foreach>
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
+        assert!(result.contains("cceckman"));
+        assert!(result.contains("ddedkman"));
+    }
 }
