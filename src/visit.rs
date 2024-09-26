@@ -1,7 +1,7 @@
 //! Visitor for an HTML tree.
 
-use crate::queries::{DbTable, Queries};
-use ego_tree::{NodeId, NodeMut, NodeRef, Tree};
+use crate::queries::{DbTable, Scope};
+use ego_tree::{NodeMut, NodeRef};
 use html5ever::{
     local_name, ns,
     serialize::{SerializeOpts, TraversalScope},
@@ -14,59 +14,63 @@ use crate::Error;
 
 /// Recursive "visit" function.
 ///
-/// Evaluates the source node in the provided context,
+/// Evaluates the source node in the provided scope,
 /// adding elements under output_parent as needed.
 fn visit_recurse(
-    context: &mut Queries,
+    scope: &mut Scope,
     source: NodeRef<Node>,
     output_parent: &mut NodeMut<Node>,
 ) -> Result<(), Error> {
     if let Some(eref) = ElementRef::wrap(source) {
-        visit_element(context, eref, output_parent)
+        visit_element(scope, eref, output_parent)
     } else {
         let mut new = output_parent.append(source.value().clone());
+        let mut scope = scope.push();
         for child in source.children() {
-            visit_recurse(context, child, &mut new)?;
+            visit_recurse(&mut scope, child, &mut new)?;
         }
         Ok(())
     }
 }
 
+/// Visit an element node in the tree.
+/// Delegates to specialized functions for htmpl-* elements.
 fn visit_element(
-    context: &mut Queries,
+    scope: &mut Scope,
     source: ElementRef,
     output_parent: &mut NodeMut<Node>,
 ) -> Result<(), Error> {
     match source.value().name.local.as_ref() {
+        "htmpl-foreach" => visit_foreach(scope, source, output_parent),
         "htmpl-insert" => {
-            let content = visit_insert(context, source)?;
+            let content = visit_insert(scope, source)?;
             output_parent.append(Node::Text(scraper::node::Text {
                 text: content.into(),
             }));
             Ok(())
         }
-        "htmpl-query" => context.do_query(source),
+        "htmpl-query" => scope.do_query(source),
         _ => {
+            // TODO: Patch attributes.
             // Insert self, then recurse in a new scope.
+            let mut scope = scope.push();
             let mut new = output_parent.append(Node::Element(source.value().clone()));
-            context.push_scope();
             for child in source.children() {
-                visit_recurse(context, child, &mut new)?;
+                visit_recurse(&mut scope, child, &mut new)?;
             }
-            context.pop_scope();
             Ok(())
         }
     }
 }
 
-/// Visit a node in the tree.
-/// Returns true if recursion is required.
-fn visit_insert(context: &Queries, element: ElementRef) -> Result<String, Error> {
+/// Evaluate an htmpl-insert element.
+/// Returns the text with which to replace the node in the output tree.
+fn visit_insert(scope: &Scope, element: ElementRef) -> Result<String, Error> {
     let query = element
         .value()
         .attr("query")
         .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
-    let result = context
+    let result = scope
         .get(query)
         .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
     // An insert cannot flatten results; the length has to be 1.
@@ -112,6 +116,29 @@ fn visit_insert(context: &Queries, element: ElementRef) -> Result<String, Error>
     Ok(format_value(value))
 }
 
+/// Visit an htmpl-foreach node.
+/// Recurses into the output tree, inserting into the output for each row.
+fn visit_foreach(
+    scope: &mut Scope,
+    element: ElementRef,
+    output_parent: &mut NodeMut<Node>,
+) -> Result<(), Error> {
+    let query = element
+        .value()
+        .attr("query")
+        .ok_or(Error::MissingAttr("htmpl-foreach", "query"))?;
+    let it = scope
+        .for_each_row(query)
+        .ok_or(Error::MissingQuery("htmpl-foreach", query.to_owned()))?;
+    for mut scope in it {
+        // rows * children:
+        for child in element.children() {
+            visit_recurse(&mut scope, child, output_parent)?;
+        }
+    }
+    Ok(())
+}
+
 fn format_value(v: &Value) -> String {
     match v {
         Value::Null => "null".to_owned(),
@@ -145,9 +172,9 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
     .one(s.as_ref());
     // let mut h = Html::parse_fragment(s.as_ref());
 
-    let mut context = Queries::new(dbs);
+    let mut scope = Scope::new(dbs);
     let mut output = scraper::Html::new_fragment();
-    visit_recurse(&mut context, h.tree.root(), &mut output.tree.root_mut())?;
+    visit_recurse(&mut scope, h.tree.root(), &mut output.tree.root_mut())?;
 
     // Scraper appears to synthesize an <html> wrapping element.
     // TODO: Make "this is a fragment" vs. "this is a whole-document" explicit,
@@ -303,11 +330,19 @@ SELECT uuid FROM users;
 SELECT * FROM users;
 </htmpl-query>
 <htmpl-foreach query="q">
-<htmpl-insert query="q" column="name" /> <htmpl-insert query="q" column="uuid" />
+<htmpl-insert query="q" column="uuid" /> <htmpl-insert query="q" column="name" />
 </htmpl-foreach>
         "#;
         let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
-        assert!(result.contains(&format!("{} cceckman", CCECKMAN_UUID)));
-        assert!(result.contains(&format!("{} ddedkman", OTHER_UUID)));
+        assert!(
+            result.contains(&format!("{} cceckman", CCECKMAN_UUID)),
+            "output does not contain cceckman:\n---\n{}\n---\n",
+            result
+        );
+        assert!(
+            result.contains(&format!("{} ddedkman", OTHER_UUID)),
+            "output does not contain other:\n---\n{}\n---\n",
+            result
+        );
     }
 }
