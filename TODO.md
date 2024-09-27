@@ -1,0 +1,20 @@
+- [ ] htmpl, the library
+    - [x] htmpl-query
+    - [x] htmpl-insert
+    - [ ] htmpl-foreach
+    - [ ] htmpl-attr
+    - [ ] htmpl-if
+- [ ] htmpl-wasm, the demo
+    - [ ] `cargo` workspace
+    - [ ] Build as WASM
+    - [ ] Web component?
+    - [ ] Release via CI
+    - [ ] Hugo widget
+- [ ] Publication
+    - [ ] [cargo-semver-checks](https://crates.io/crates/cargo-semver-checks)
+    - [ ] LICENSE, CONTRIBUTORS files
+    - [ ] Blog post
+- [ ] htmpl-ssg, the static site generator
+    - [ ] Separate test cases
+- [ ] htmpl-srv, the server
+- [ ] htmpl-js, Web-native alternative
