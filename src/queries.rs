@@ -36,7 +36,7 @@
 
 use std::{collections::HashMap, rc::Rc};
 
-use rusqlite::{params, types::Value};
+use rusqlite::{types::Value, ToSql};
 use scraper::ElementRef;
 
 use crate::Error;
@@ -82,21 +82,82 @@ impl<'a> Scope<'a> {
     }
 }
 
+/// Parse a parameter name into a query_name and optional column.
+fn parse_specifier(s: &str) -> Result<(&str, Option<&str>), Error> {
+    let mk_err = || Error::InvalidParameter("", s.to_owned());
+    let (query_name, tail) = match s.split_once("(") {
+        None => return Ok((s, None)),
+        Some(tail) => tail,
+    };
+    let (column_name, zero) = tail.split_once(")").ok_or_else(mk_err)?;
+    if query_name.is_empty() || column_name.is_empty() || !zero.is_empty() {
+        return Err(mk_err());
+    }
+    Ok((query_name, Some(column_name)))
+}
+
 impl Scope<'_> {
     /// Look up the results of the named query.
-    pub fn get(&self, name: impl AsRef<str>) -> Option<&QueryResult> {
-        self.bindings.get(name.as_ref()).map(|v| &**v)
+    pub fn get(&self, name: impl AsRef<str>) -> Result<&QueryResult, Error> {
+        self.bindings
+            .get(name.as_ref())
+            .map(|v| &**v)
+            .ok_or_else(|| Error::MissingQuery("", name.as_ref().to_owned()))
+    }
+
+    /// Gets a single value from a specifier.
+    /// The specifier may be of the form:
+    /// - query_name, if the query's results are a single row and single column
+    /// - query_name(column_name), if the query's results are a single row
+    pub fn get_single(&self, specifier: impl AsRef<str>) -> Result<&Value, Error> {
+        let (query_name, column_name) = parse_specifier(specifier.as_ref())?;
+        let q = self.get(query_name)?;
+        let row = match q.len() {
+            1 => &q[0],
+            _ => return Err(Error::Cardinality("", query_name.to_owned(), q.len(), 1)),
+        };
+        let fmt_columns = || {
+            format!(
+                "\"{}\"",
+                row.iter()
+                    .map(|(k, _v)| k.to_owned())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+
+        // Extract the relevant column: explicit, or implicit single column.
+        let value = if let Some(v) = column_name {
+            // An explicit column was specified; try it out.
+            row.get(v).ok_or_else(|| {
+                Error::MissingColumn("", query_name.to_owned(), fmt_columns(), v.to_owned())
+            })?
+        } else {
+            (if row.len() == 1 {
+                row.iter().next().map(|(_k, v)| v)
+            } else {
+                None
+            })
+            .ok_or_else(|| Error::NoDefaultColumn("", query_name.to_owned(), fmt_columns()))?
+        };
+        Ok(value)
     }
 
     /// Perform the query described in `element`.
     /// Binds the query results to the query given in the `name` attribute.
+    /// 
+    /// TODO: Document parameter usage --
+    /// - Use the ":param_name" format for parameter names
+    /// - Use attributes named ":parameter_name", which name the variable to use
+    /// Attributes starting with a colon are valid in XML, i.e. for custom components:
+    /// https://www.w3.org/TR/xml/#NT-Name
+    /// https://stackoverflow.com/questions/925994/what-characters-are-allowed-in-an-html-attribute-name
     pub fn do_query(&mut self, element: ElementRef) -> Result<(), Error> {
         let name = element
             .attr("name")
             .ok_or(Error::MissingAttr("htmpl-query", "name"))?;
         let note_err = |e| Error::Sql(name.to_owned(), e);
-        let content = element.text().collect::<Vec<_>>().join(" ");
-
+        let content = element.text().collect::<Vec<_>>().join(" ").trim().to_owned();
         let mut st = self
             .dbs
             .prepare(&content)
@@ -104,11 +165,27 @@ impl Scope<'_> {
         let names: Vec<String> = (0..st.column_count())
             .filter_map(|i| st.column_name(i).map(str::to_owned).ok())
             .collect();
-        // TODO: Pass params from vars
-        let result: rusqlite::Result<QueryResult> = st
-            .query(params![])
+        // Column names are (apparently) zero-indexed;
+        // parameter names are one-indexed.
+        let param_names : Vec<String> = (0..st.parameter_count())
+        .filter_map(|i| st.parameter_name(i + 1).map(str::to_owned))
+        .collect();
+        let params: Result<Vec<(&str, &dyn ToSql)>, Error> = 
+        param_names.iter().map(
+            |name| {
+                let query = element.attr(&name).ok_or_else(||
+                    Error::MissingParameter("", name.clone()))?;
+                let value: &dyn ToSql = self.get_single(query)?;
+                Ok((name.as_str(), value))
+            }).collect();
+        let params = params.map_err(|e| e.set_element("htmpl-query"))?;
+
+        // TODO: For some reson, making this Result<QueryResult> is discarding one of the entries of the Vec.
+        // Something about aggregating Vec<HashMap> maybe?
+        let result : rusqlite::Result<QueryResult> = st
+            .query(params.as_slice())
             .map_err(note_err)?
-            .mapped(|row| row_to_hash(&names, row))
+            .mapped(|row| row_to_hash(&names, row) )
             .collect();
         let result = result.map_err(note_err)?;
         self.bindings.insert(name.to_owned(), Rc::new(result));

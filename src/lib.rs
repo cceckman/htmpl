@@ -19,6 +19,10 @@ enum Error {
     MissingColumn(&'static str, String, String, String),
     #[error("invalid column: from element {0}, query {1} has columns {2}, wanted one column")]
     NoDefaultColumn(&'static str, String, String),
+    #[error("in invalid parameter: in element {0}, parameter {1}: has invalid format")]
+    InvalidParameter(&'static str, String),
+    #[error("in invalid parameter: in element {0}, query has parameter {1}, but there is no corresponding attribute")]
+    MissingParameter(&'static str, String),
 
     #[error("SQL error: in query {0}: {1}")]
     Sql(String, rusqlite::Error),
@@ -26,6 +30,25 @@ enum Error {
     Serialize(io::Error),
     #[error("html parsing error: {0}")]
     HtmlParse(Cow<'static, str>),
+}
+
+impl Error {
+    /// Modify the element listed (in some errors).
+    pub fn set_element(self, element: &'static str) -> Self {
+        match self {
+            Error::TemplateEval(_)
+            | Error::Sql(_, _)
+            | Error::Serialize(_)
+            | Error::HtmlParse(_) => self,
+            Error::MissingAttr(_, attr) => Error::MissingAttr(element, attr),
+            Error::MissingQuery(_, a) => Error::MissingQuery(element, a),
+            Error::Cardinality(_, a, b, c) => Error::Cardinality(element, a, b, c),
+            Error::MissingColumn(_, a, b, c) => Error::MissingColumn(element, a, b, c),
+            Error::NoDefaultColumn(_, a, b) => Error::NoDefaultColumn(element, a, b),
+            Error::InvalidParameter(_, a) => Error::InvalidParameter(element, a),
+            Error::MissingParameter(_, a) => Error::MissingParameter(element, a),
+        }
+    }
 }
 
 impl PartialEq for Error {
@@ -61,7 +84,6 @@ impl<T> From<Error> for Result<T, Error> {
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
-    use uuid::Uuid;
 
     pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
     pub const OTHER_UUID: &str = "6de21789-6279-416c-9025-d090d407bc8c";
@@ -82,10 +104,9 @@ CREATE TABLE users
         )
         .expect("failed to prepare test DB schema");
 
-        let uuid: Uuid = CCECKMAN_UUID.parse().expect("invalid uuid");
         conn.execute(
             r#"INSERT INTO users (uuid, name) VALUES (?, ?), (?, ?)"#,
-            params![uuid.to_string(), "cceckman", OTHER_UUID, "ddedkman"],
+            params![CCECKMAN_UUID, "cceckman", OTHER_UUID, "ddedkman"],
         )
         .expect("failed to prepare test DB content");
         conn

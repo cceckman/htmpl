@@ -1,7 +1,8 @@
 - [ ] htmpl, the library
     - [x] htmpl-query
     - [x] htmpl-insert
-    - [ ] htmpl-foreach
+    - [x] htmpl-foreach
+    - [x] htmpl-query: parameters
     - [ ] htmpl-attr
     - [ ] htmpl-if
 - [ ] htmpl-wasm, the demo

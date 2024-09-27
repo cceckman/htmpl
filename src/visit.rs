@@ -70,49 +70,9 @@ fn visit_insert(scope: &Scope, element: ElementRef) -> Result<String, Error> {
         .value()
         .attr("query")
         .ok_or(Error::MissingAttr("htmpl-insert", "query"))?;
-    let result = scope
-        .get(query)
-        .ok_or(Error::MissingQuery("htmpl-insert", query.to_owned()))?;
-    // An insert cannot flatten results; the length has to be 1.
-    if result.len() != 1 {
-        return Err(Error::Cardinality(
-            "htmpl-insert",
-            query.to_owned(),
-            result.len(),
-            1,
-        ));
-    }
-    let result = &result[0];
-    let fmt_columns = || {
-        format!(
-            "\"{}\"",
-            result
-                .iter()
-                .map(|(k, _v)| k.to_owned())
-                .collect::<Vec<_>>()
-                .join(",")
-        )
-    };
-
-    // Extract the relevant column: explicit, or implicit single column.
-    let value = if let Some(v) = element.attr("column") {
-        // An explicit column was specified.
-        result.get(v).ok_or_else(|| {
-            Error::MissingColumn(
-                "htmpl-insert",
-                query.to_owned(),
-                fmt_columns(),
-                v.to_owned(),
-            )
-        })?
-    } else {
-        (if result.len() == 1 {
-            result.iter().next().map(|(_k, v)| v)
-        } else {
-            None
-        })
-        .ok_or_else(|| Error::NoDefaultColumn("htmpl-insert", query.to_owned(), fmt_columns()))?
-    };
+    let value = scope
+        .get_single(query)
+        .map_err(|e| e.set_element("htmpl-insert"))?;
     Ok(format_value(value))
 }
 
@@ -243,7 +203,7 @@ SELECT * FROM users WHERE name = "cceckman";
 <htmpl-query name="q">
 SELECT * FROM users WHERE name = "cceckman";
 </htmpl-query>
-<htmpl-insert query="q" column="does-not-exist" />
+<htmpl-insert query="q(does-not-exist)" />
         "#;
         let result = evaluate_template(TEMPLATE, &db).expect_err("unexpected success");
         if let Error::MissingColumn("htmpl-insert", _, _, _) = result {
@@ -259,7 +219,7 @@ SELECT * FROM users WHERE name = "cceckman";
 <htmpl-query name="q">
 SELECT * FROM users WHERE name = "cceckman";
 </htmpl-query>
-<htmpl-insert query="q" column="uuid" />
+<htmpl-insert query="q(uuid)" />
         "#;
         let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
         assert_eq!(result.trim(), CCECKMAN_UUID);
@@ -330,7 +290,7 @@ SELECT uuid FROM users;
 SELECT * FROM users;
 </htmpl-query>
 <htmpl-foreach query="q">
-<htmpl-insert query="q" column="uuid" /> <htmpl-insert query="q" column="name" />
+<htmpl-insert query="q(uuid)" /> <htmpl-insert query="q(name)" />
 </htmpl-foreach>
         "#;
         let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
@@ -354,24 +314,25 @@ SELECT * FROM users;
 SELECT * FROM users WHERE name = "noone";
 </htmpl-query>
 <htmpl-foreach query="q">
-<htmpl-insert query="q" column="uuid" /> <htmpl-insert query="q" column="name" />
+<htmpl-insert query="q(uuid)" /> <htmpl-insert query="q(name)" />
 </htmpl-foreach>
         "#;
         let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
         assert!(!result.contains(&format!("{} cceckman", CCECKMAN_UUID)));
         assert!(!result.contains(&format!("{} ddedkman", OTHER_UUID)));
+        assert_eq!(result.trim(), "");
     }
 
     #[test]
-    fn query_parameters() {
+    fn single_query_parameter() {
         let db = make_test_db();
         const TEMPLATE: &str = r#"
-<htmpl-query name="get_uuid">
+<htmpl-query name="get_uuid" >
 SELECT uuid FROM users;
 </htmpl-query>
 <htmpl-foreach query="get_uuid">
-<htmpl-query name="get_name" param="get_uuid(uuid)">
-SELECT name FROM users WHERE uuid = ?;
+<htmpl-query name="get_name" :uuid="get_uuid(uuid)" >
+SELECT name FROM users WHERE uuid = :uuid
 </htmpl-query>
 <htmpl-insert query="get_name" />
 </htmpl-foreach>
