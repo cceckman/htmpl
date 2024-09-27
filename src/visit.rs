@@ -341,4 +341,20 @@ SELECT name FROM users WHERE uuid = :uuid
         assert!(result.contains("cceckman"));
         assert!(result.contains("ddedkman"));
     }
+
+    #[test]
+    fn constant() {
+        let db = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="admin_name">
+SELECT "cceckman" AS admin_name;
+</htmpl-query>
+<htmpl-query name="admin_uuid" :name="admin_name">
+SELECT uuid FROM users WHERE name = :name;
+</htmpl-query>
+<htmpl-insert query="admin_uuid" />
+        "#;
+        let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
+        assert_eq!(result.trim(), format!("{}", CCECKMAN_UUID));
+    }
 }
