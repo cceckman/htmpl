@@ -1,3 +1,4 @@
+#![doc = include_str!("lib.md")]
 #![allow(dead_code)]
 
 use std::{borrow::Cow, io};
@@ -5,8 +6,10 @@ use std::{borrow::Cow, io};
 mod queries;
 mod visit;
 
+pub use visit::evaluate_template;
+
 #[derive(Debug, thiserror::Error)]
-enum Error {
+pub enum Error {
     #[error("failed at template evaluation: {0}")]
     TemplateEval(String),
     #[error("missing attribute: from element {0}, attribute {1}")]

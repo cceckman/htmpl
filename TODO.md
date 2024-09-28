@@ -20,3 +20,7 @@
     - [ ] Separate test cases
 - [ ] htmpl-srv, the server
 - [ ] htmpl-js, Web-native alternative
+- [ ] Feature enhancements
+    - [ ] formatting directives for real, int, etc.
+    - [ ] good localization support: languages, time formats, etc.
+    - [ ] pluggable formatters?
