@@ -87,31 +87,50 @@ impl<T> From<Error> for Result<T, Error> {
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, Connection};
+    use tempfile::NamedTempFile;
 
     pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
     pub const OTHER_UUID: &str = "6de21789-6279-416c-9025-d090d407bc8c";
 
+    /// Makes a test database and gets a connection to it.
     pub fn make_test_db() -> Connection {
-        let conn = rusqlite::Connection::open_in_memory().expect("failed to create test DB");
+        let dbfile = NamedTempFile::new().expect("could not create temp DB");
+        let conn = Connection::open(format!("file:{}?mode=rwc", dbfile.path().display()))
+            .expect("failed to create test DB");
         conn.execute(
             r#"
-CREATE TABLE users
-(   id      INTEGER PRIMARY KEY NOT NULL
-,   uuid    TEXT NOT NULL
-,   name    TEXT NOT NULL
-,   UNIQUE(uuid)
-,   UNIQUE(name)
-);
-            "#,
-            params![],
+    CREATE TABLE users
+    (   id      INTEGER PRIMARY KEY NOT NULL
+    ,   uuid    TEXT NOT NULL
+    ,   name    TEXT NOT NULL
+    ,   UNIQUE(uuid)
+    ,   UNIQUE(name)
+    );
+                "#,
+            [],
         )
         .expect("failed to prepare test DB schema");
-
         conn.execute(
             r#"INSERT INTO users (uuid, name) VALUES (?, ?), (?, ?)"#,
             params![CCECKMAN_UUID, "cceckman", OTHER_UUID, "ddedkman"],
         )
         .expect("failed to prepare test DB content");
-        conn
+        // We keep the writing "conn" around until we've re-opened it as read-only.
+        // sqlite appears to forget the database unless there is some reference to
+        // it.
+
+        let ro = Connection::open(format!("file:{}?mode=ro", dbfile.path().display()))
+            .expect("failed to re-open test DB");
+
+        dbfile.keep().unwrap();
+        ro
+    }
+
+    #[test]
+    fn meta_conn_is_ro() {
+        let conn = make_test_db();
+        // Should fail: DB is read-only
+        conn.execute("INSERT INTO users (uuid, name) VALUES (?, ?)", ["x", "y"])
+            .unwrap_err();
     }
 }
