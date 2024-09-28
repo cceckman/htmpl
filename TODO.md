@@ -4,6 +4,7 @@
     - [x] htmpl-foreach
     - [x] htmpl-query: parameters
     - [ ] htmpl-attr
+        - Needs a redesign: attributes are key-value, not list-of-mappings.
     - [ ] htmpl-if
 - [ ] htmpl-wasm, the demo
     - [ ] `cargo` workspace
