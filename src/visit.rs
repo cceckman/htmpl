@@ -1,6 +1,8 @@
 //! Visitor for an HTML tree.
 
-use crate::queries::{DbTable, Scope};
+use std::rc::Rc;
+
+use crate::queries::{Attribute, DbTable, Scope};
 use ego_tree::{NodeMut, NodeRef};
 use html5ever::{
     local_name, ns,
@@ -8,7 +10,7 @@ use html5ever::{
     QualName,
 };
 use rusqlite::types::Value;
-use scraper::{ElementRef, Node, Selector};
+use scraper::{selectable::Selectable, ElementRef, Node, Selector};
 
 use crate::Error;
 
@@ -50,11 +52,23 @@ fn visit_element(
             Ok(())
         }
         "htmpl-query" => scope.do_query(source),
+        "htmpl-attr" => visit_attr(scope, source),
         _ => {
-            // TODO: Patch attributes.
+            let mut new = source.value().clone();
+            // TODO: Consider constructing the qualified Attribute in the -attr element, and
+            // cloning it here; that should do less string-cloning up-front
+            for new_attr in scope.get_attrs(source.id()) {
+                new.attrs.insert(
+                    QualName::new(None, "".into(), new_attr.name.clone().into()),
+                    new_attr.value.clone().into(),
+                );
+            }
+            // TODO: Actually add the new attributes to the element?
+
+            let mut new = output_parent.append(Node::Element(new));
+            // Patch attributes.
             // Insert self, then recurse in a new scope.
             let mut scope = scope.push();
-            let mut new = output_parent.append(Node::Element(source.value().clone()));
             for child in source.children() {
                 visit_recurse(&mut scope, child, &mut new)?;
             }
@@ -96,6 +110,39 @@ fn visit_foreach(
             visit_recurse(&mut scope, child, output_parent)?;
         }
     }
+    Ok(())
+}
+
+/// Evaluate an htmpl-attr element.
+fn visit_attr(scope: &mut Scope, element: ElementRef) -> Result<(), Error> {
+    let query = element
+        .value()
+        .attr("query")
+        .ok_or(Error::MissingAttr("htmpl-attr", "query"))?;
+    let select = element
+        .value()
+        .attr("select")
+        .ok_or(Error::MissingAttr("htmpl-attr", "select"))?;
+    let selector: Selector = Selector::parse(select)
+        .map_err(|_| Error::InvalidParameter("htmpl-attr", "select".to_owned()))?;
+    let attr = element
+        .value()
+        .attr("attr")
+        .ok_or(Error::MissingAttr("htmpl-attr", "attr"))?;
+    let value = scope
+        .get_single(query)
+        .map_err(|e| e.set_element("htmpl-attr"))?;
+    let attr = Rc::new(Attribute {
+        name: attr.to_owned(),
+        value: format_value(value),
+    });
+
+    if let Some(parent) = element.parent().and_then(ElementRef::wrap) {
+        for selected in parent.select(&selector) {
+            scope.add_attr(selected.id(), attr.clone())
+        }
+    }
+
     Ok(())
 }
 
@@ -165,7 +212,7 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
 mod tests {
     use super::*;
     use crate::{
-        tests::{make_test_db, CCECKMAN_UUID, OTHER_UUID},
+        tests::{html_equal, make_test_db, CCECKMAN_UUID, OTHER_UUID},
         Error,
     };
 
@@ -222,7 +269,7 @@ SELECT * FROM users WHERE name = "cceckman";
 <htmpl-insert query="q(uuid)" />
         "#;
         let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
-        assert_eq!(result.trim(), CCECKMAN_UUID);
+        html_equal(result, CCECKMAN_UUID);
     }
 
     #[test]
@@ -235,7 +282,7 @@ SELECT uuid FROM users WHERE name = "cceckman";
 <htmpl-insert query="q" />
         "#;
         let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
-        assert_eq!(result.trim(), CCECKMAN_UUID);
+        html_equal(result, CCECKMAN_UUID);
     }
 
     #[test]
@@ -276,9 +323,9 @@ SELECT uuid FROM users;
             .chars()
             .filter(|v| !char::is_whitespace(*v))
             .collect();
-        assert_eq!(
+        html_equal(
             trimmed,
-            format!("<div><div>{}</div>{}</div>", CCECKMAN_UUID, OTHER_UUID)
+            format!("<div><div>{}</div>{}</div>", CCECKMAN_UUID, OTHER_UUID),
         );
     }
 
@@ -355,6 +402,39 @@ SELECT uuid FROM users WHERE name = :name;
 <htmpl-insert query="admin_uuid" />
         "#;
         let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
-        assert_eq!(result.trim(), format!("{}", CCECKMAN_UUID));
+        html_equal(result, CCECKMAN_UUID);
+    }
+
+    #[test]
+    fn single_attr() {
+        let conn = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">SELECT name, (uuid || " name") AS uuid_class FROM users ORDER BY name ASC LIMIT 1;</htmpl-query>
+<htmpl-attr select=".name" query="q(uuid_class)" attr="class" />
+<div class="name"><htmpl-insert query="q(name)" /></div>
+"#;
+        let result = evaluate_template(TEMPLATE, &conn).unwrap();
+        html_equal(
+            result,
+            r#"<div class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name">cceckman</div>"#,
+        );
+    }
+
+    #[test]
+    fn attr_selector() {
+        let conn = make_test_db();
+        const TEMPLATE: &str = r#"
+<htmpl-query name="q">SELECT name, (uuid || " name") AS uuid_class FROM users ORDER BY name ASC LIMIT 1;</htmpl-query>
+<htmpl-attr select=".name" query="q(uuid_class)" attr="class" />
+<div class="name"><a href="https://cceckman.com"><htmpl-insert query="q(name)" /></a></div>
+<div><a class="name" href="https://cceckman.com"><htmpl-insert query="q(name)" /></a></div>"#;
+        let result = evaluate_template(TEMPLATE, &conn).unwrap();
+        // Don't depend on attribute order:
+        html_equal(
+            result.trim(),
+            r#"
+<div class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name"><a href="https://cceckman.com">cceckman</a></div>
+<div><a href="https://cceckman.com" class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name">cceckman</a></div> "#.trim(),
+        );
     }
 }

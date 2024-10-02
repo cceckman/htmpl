@@ -86,7 +86,10 @@ impl<T> From<Error> for Result<T, Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::ops::Deref;
+
     use rusqlite::{params, Connection};
+    use scraper::Html;
     use tempfile::NamedTempFile;
 
     pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
@@ -132,5 +135,12 @@ mod tests {
         // Should fail: DB is read-only
         conn.execute("INSERT INTO users (uuid, name) VALUES (?, ?)", ["x", "y"])
             .unwrap_err();
+    }
+
+    /// Compare HTML for equal structure.
+    pub fn html_equal(got: impl Deref<Target = str>, want: impl Deref<Target = str>) {
+        let got = Html::parse_fragment(got.trim());
+        let want = Html::parse_fragment(want.trim());
+        assert_eq!(got, want);
     }
 }

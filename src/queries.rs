@@ -34,8 +34,9 @@
 //! ```
 //!
 
-use std::{collections::HashMap, rc::Rc};
+use std::{collections::HashMap, ops::Deref, rc::Rc};
 
+use ego_tree::NodeId;
 use rusqlite::{types::Value, ToSql};
 use scraper::ElementRef;
 
@@ -48,10 +49,20 @@ type QueryResult = Vec<HashMap<String, Value>>;
 /// Databases available for querying.
 pub type DbTable = rusqlite::Connection;
 
+/// An attribute added with the htmpl-attr element.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Attribute {
+    /// TODO: Should this be an Atom or similar? Something from scraper?
+    pub name: String,
+    pub value: String,
+}
+
+/// Data local to the current scope.
 #[derive(Debug, Clone)]
 pub struct Scope<'a> {
     dbs: &'a DbTable,
     bindings: HashMap<String, Rc<QueryResult>>,
+    attrs: HashMap<NodeId, Vec<Rc<Attribute>>>,
 }
 
 impl<'a> Scope<'a> {
@@ -60,6 +71,7 @@ impl<'a> Scope<'a> {
         Scope {
             dbs,
             bindings: Default::default(),
+            attrs: Default::default(),
         }
     }
 
@@ -79,6 +91,16 @@ impl<'a> Scope<'a> {
             i: 0,
             parent_scope: self.clone(),
         })
+    }
+
+    /// Add an attribute binding.
+    pub fn add_attr(&mut self, node: NodeId, attr: Rc<Attribute>) {
+        self.attrs.entry(node).or_default().push(attr)
+    }
+
+    /// Get all attributes for a given node.
+    pub fn get_attrs(&self, node: NodeId) -> &[impl Deref<Target = Attribute>] {
+        self.attrs.get(&node).map(Vec::as_slice).unwrap_or(&[])
     }
 }
 
@@ -145,7 +167,7 @@ impl Scope<'_> {
 
     /// Perform the query described in `element`.
     /// Binds the query results to the query given in the `name` attribute.
-    /// 
+    ///
     /// TODO: Document parameter usage --
     /// - Use the ":param_name" format for parameter names
     /// - Use attributes named ":parameter_name", which name the variable to use
@@ -157,7 +179,12 @@ impl Scope<'_> {
             .attr("name")
             .ok_or(Error::MissingAttr("htmpl-query", "name"))?;
         let note_err = |e| Error::Sql(name.to_owned(), e);
-        let content = element.text().collect::<Vec<_>>().join(" ").trim().to_owned();
+        let content = element
+            .text()
+            .collect::<Vec<_>>()
+            .join(" ")
+            .trim()
+            .to_owned();
         let mut st = self
             .dbs
             .prepare(&content)
@@ -167,25 +194,27 @@ impl Scope<'_> {
             .collect();
         // Column names are (apparently) zero-indexed;
         // parameter names are one-indexed.
-        let param_names : Vec<String> = (0..st.parameter_count())
-        .filter_map(|i| st.parameter_name(i + 1).map(str::to_owned))
-        .collect();
-        let params: Result<Vec<(&str, &dyn ToSql)>, Error> = 
-        param_names.iter().map(
-            |name| {
-                let query = element.attr(&name).ok_or_else(||
-                    Error::MissingParameter("", name.clone()))?;
+        let param_names: Vec<String> = (0..st.parameter_count())
+            .filter_map(|i| st.parameter_name(i + 1).map(str::to_owned))
+            .collect();
+        let params: Result<Vec<(&str, &dyn ToSql)>, Error> = param_names
+            .iter()
+            .map(|name| {
+                let query = element
+                    .attr(&name)
+                    .ok_or_else(|| Error::MissingParameter("", name.clone()))?;
                 let value: &dyn ToSql = self.get_single(query)?;
                 Ok((name.as_str(), value))
-            }).collect();
+            })
+            .collect();
         let params = params.map_err(|e| e.set_element("htmpl-query"))?;
 
         // TODO: For some reson, making this Result<QueryResult> is discarding one of the entries of the Vec.
         // Something about aggregating Vec<HashMap> maybe?
-        let result : rusqlite::Result<QueryResult> = st
+        let result: rusqlite::Result<QueryResult> = st
             .query(params.as_slice())
             .map_err(note_err)?
-            .mapped(|row| row_to_hash(&names, row) )
+            .mapped(|row| row_to_hash(&names, row))
             .collect();
         let result = result.map_err(note_err)?;
         self.bindings.insert(name.to_owned(), Rc::new(result));
