@@ -130,6 +130,8 @@ Recursive descent down the DOM tree.
 
 ### Selectors {#selector}
 
+TODO: Rename; need to distinguish CSS selectors.
+
 _Selectors_ are how data makes it back from SQL to the HTML document.
 A selector names a single (scalar) value from a previous query.
 
@@ -154,6 +156,47 @@ Query+column form: `query_name(column_name)`
     i.e. for each row of the result, evaluate the inner template as if the query had returned just one row.
 
 Note that, if the query returned no rows, the inner template will not appear at all.
+
+## `htmpl-attr`
+
+You may note that the aboe allows you to _insert_ DOM nodes, but not to specify their attributes.
+
+The `htmpl-attr` sets an attribute to a variable value. An `htmpl-attr` modifies nodes:
+- that are in its current scope (i.e. under the same parent)
+- that are after the `htmpl-attr` in the source
+- that are identified by a CSS selector
+- that are not htmpl elements
+
+```rust
+#   pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
+#   pub const OTHER_UUID: &str = "6de21789-6279-416c-9025-d090d407bc8c";
+
+#   fn main() {
+#     let conn = rusqlite::Connection::open_in_memory().unwrap();
+#         conn.execute(
+#                 r#"
+#     CREATE TABLE users
+#     (   uuid    TEXT PRIMARY KEY NOT NULL
+#     ,   name    TEXT NOT NULL
+#     ,   UNIQUE(uuid)
+#     ,   UNIQUE(name)
+#     );
+#                 "#, []).unwrap();
+
+#         conn.execute(
+#             r#"INSERT INTO users (uuid, name) VALUES (?, ?), (?, ?)"#,
+#             rusqlite::params![CCECKMAN_UUID, "cceckman", OTHER_UUID, "ddedkman"],
+#         ).unwrap();
+    const TEMPLATE : &str = r#"
+<htmpl-query name="q">SELECT name, (uuid || " name") AS uuid_class FROM users ORDER BY name ASC LIMIT 1;</htmpl-query>
+<htmpl-attr select=".name" query="q(uuid_class)" attr="class" />
+<div class="name"><htmpl-insert query="q(name)" /></div>
+"#;
+    let result = htmpl::evaluate_template(TEMPLATE, &conn).unwrap();
+    assert_eq!(result.trim(), r#"<div class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name">cceckman</div>"#);
+#   }
+```
+
 
 # Caveats
 

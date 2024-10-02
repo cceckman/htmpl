@@ -3,8 +3,10 @@
     - [x] htmpl-insert
     - [x] htmpl-foreach
     - [x] htmpl-query: parameters
-    - [ ] htmpl-attr
+    - [x] htmpl-attr
         - Needs a redesign: attributes are key-value, not list-of-mappings.
+        - Apply to the next non-attr element?
+        - No, apply via selector
     - [ ] htmpl-if
 - [ ] htmpl-wasm, the demo
     - [ ] `cargo` workspace
