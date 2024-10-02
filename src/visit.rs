@@ -269,7 +269,7 @@ SELECT * FROM users WHERE name = "cceckman";
 <htmpl-insert query="q(uuid)" />
         "#;
         let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
-        assert_eq!(result.trim(), CCECKMAN_UUID);
+        html_equal(result, CCECKMAN_UUID);
     }
 
     #[test]
@@ -282,7 +282,7 @@ SELECT uuid FROM users WHERE name = "cceckman";
 <htmpl-insert query="q" />
         "#;
         let result: String = evaluate_template(TEMPLATE, &db).expect("failed to evaluate template");
-        assert_eq!(result.trim(), CCECKMAN_UUID);
+        html_equal(result, CCECKMAN_UUID);
     }
 
     #[test]
@@ -323,9 +323,9 @@ SELECT uuid FROM users;
             .chars()
             .filter(|v| !char::is_whitespace(*v))
             .collect();
-        assert_eq!(
+        html_equal(
             trimmed,
-            format!("<div><div>{}</div>{}</div>", CCECKMAN_UUID, OTHER_UUID)
+            format!("<div><div>{}</div>{}</div>", CCECKMAN_UUID, OTHER_UUID),
         );
     }
 
@@ -402,7 +402,7 @@ SELECT uuid FROM users WHERE name = :name;
 <htmpl-insert query="admin_uuid" />
         "#;
         let result = evaluate_template(TEMPLATE, &db).expect("unexpected error");
-        assert_eq!(result.trim(), format!("{}", CCECKMAN_UUID));
+        html_equal(result, CCECKMAN_UUID);
     }
 
     #[test]
@@ -414,9 +414,9 @@ SELECT uuid FROM users WHERE name = :name;
 <div class="name"><htmpl-insert query="q(name)" /></div>
 "#;
         let result = evaluate_template(TEMPLATE, &conn).unwrap();
-        assert_eq!(
-            result.trim(),
-            r#"<div class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name">cceckman</div>"#
+        html_equal(
+            result,
+            r#"<div class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name">cceckman</div>"#,
         );
     }
 
