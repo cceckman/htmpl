@@ -3,10 +3,9 @@
     - [x] htmpl-insert
     - [x] htmpl-foreach
     - [x] htmpl-query: parameters
-    - [x] htmpl-attr
+    - [ ] htmpl-attr
         - Needs a redesign: attributes are key-value, not list-of-mappings.
-        - Apply to the next non-attr element?
-        - No, apply via selector
+        - Apply via selector: OK
     - [ ] htmpl-if
 - [ ] htmpl-wasm, the demo
     - [ ] `cargo` workspace
@@ -19,6 +18,8 @@
     - [ ] LICENSE, CONTRIBUTORS files
     - [ ] Blog post
 - [ ] htmpl-ssg, the static site generator
+    - [ ] Nested templates
+        - NB, `htmpl-attr` won't propagate through nested templates
     - [ ] Separate test cases
 - [ ] htmpl-srv, the server
 - [ ] htmpl-js, Web-native alternative

@@ -1,9 +1,10 @@
 #![doc = include_str!("lib.md")]
 #![allow(dead_code)]
 
-use std::{borrow::Cow, io};
+use std::io;
 
 mod queries;
+mod tests;
 mod visit;
 
 pub use visit::evaluate_template;
@@ -31,8 +32,8 @@ pub enum Error {
     Sql(String, rusqlite::Error),
     #[error("reserializing error: {0}")]
     Serialize(io::Error),
-    #[error("html parsing error: {0}")]
-    HtmlParse(Cow<'static, str>),
+    #[error("error parsing HTML template: {0}")]
+    HtmlParse(String),
 }
 
 impl Error {
@@ -83,6 +84,3 @@ impl<T> From<Error> for Result<T, Error> {
         Err(val)
     }
 }
-
-#[cfg(test)]
-mod tests;

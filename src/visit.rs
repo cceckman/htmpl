@@ -7,6 +7,8 @@ use ego_tree::{NodeMut, NodeRef};
 use html5ever::{
     local_name, ns,
     serialize::{SerializeOpts, TraversalScope},
+    tokenizer::TokenizerOpts,
+    tree_builder::TreeBuilderOpts,
     QualName,
 };
 use rusqlite::types::Value;
@@ -37,11 +39,13 @@ fn visit_recurse(
 
 /// Visit an element node in the tree.
 /// Delegates to specialized functions for htmpl-* elements.
+#[tracing::instrument(level = "debug", skip(scope, output_parent))]
 fn visit_element(
     scope: &mut Scope,
     source: ElementRef,
     output_parent: &mut NodeMut<Node>,
 ) -> Result<(), Error> {
+    tracing::debug!("element: {}", source.value().name.local.as_ref());
     match source.value().name.local.as_ref() {
         "htmpl-foreach" => visit_foreach(scope, source, output_parent),
         "htmpl-insert" => {
@@ -103,8 +107,10 @@ fn visit_foreach(
         .ok_or(Error::MissingAttr("htmpl-foreach", "query"))?;
     let it = scope
         .for_each_row(query)
-        .ok_or(Error::MissingQuery("htmpl-foreach", query.to_owned()))?;
-    for mut scope in it {
+        .ok_or(Error::MissingQuery("htmpl-foreach", query.to_owned()))?
+        .enumerate();
+    for (i, mut scope) in it {
+        let _iteration = tracing::debug_span!("foreach", "i={}", i).entered();
         // rows * children:
         for child in element.children() {
             visit_recurse(&mut scope, child, output_parent)?;
@@ -139,8 +145,11 @@ fn visit_attr(scope: &mut Scope, element: ElementRef) -> Result<(), Error> {
 
     if let Some(parent) = element.parent().and_then(ElementRef::wrap) {
         for selected in parent.select(&selector) {
+            tracing::debug!("add_attr {:?}", selected);
             scope.add_attr(selected.id(), attr.clone())
         }
+    } else {
+        tracing::error!("htmpl-attr with no parent: {:?}", element);
     }
 
     Ok(())
@@ -172,11 +181,27 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
     use html5ever::tendril::TendrilSink;
     let h = html5ever::driver::parse_fragment(
         scraper::Html::new_fragment(),
-        Default::default(),
-        QualName::new(None, ns!(), local_name!("")),
+        html5ever::ParseOpts {
+            tokenizer: TokenizerOpts {
+                exact_errors: true,
+                ..TokenizerOpts::default()
+            },
+            tree_builder: TreeBuilderOpts {
+                exact_errors: true,
+                // Enable "scripting" since we have custom elements
+                scripting_enabled: true,
+                ..TreeBuilderOpts::default()
+            },
+        },
+        QualName::new(None, ns!(html), local_name!("body")),
         Vec::new(),
     )
     .one(s.as_ref());
+    if !h.errors.is_empty() {
+        return Err(Error::HtmlParse(h.errors.join("; ")));
+    }
+    tracing::debug!("parse errors: {:?}", h.errors);
+    tracing::debug!("quirks: {:?}", h.quirks_mode);
     // let mut h = Html::parse_fragment(s.as_ref());
 
     let mut scope = Scope::new(dbs);

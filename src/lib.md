@@ -25,7 +25,7 @@ htmpl is a library for generating HTML files from HTML templates.
     const TEMPLATE : &str = r#"
 <htmpl-query name="q">SELECT name, uuid FROM users;</htmpl-query>
 <htmpl-foreach query="q">
-<htmpl-insert query="q(uuid)" /> <htmpl-insert query="q(name)" /></htmpl-foreach>
+<htmpl-insert query="q(uuid)" ></htmpl-insert> <htmpl-insert query="q(name)" ></htmpl-insert></htmpl-foreach>
 "#;
     let result = htmpl::evaluate_template(TEMPLATE, &conn).unwrap();
     assert_eq!(result.trim(),
@@ -101,10 +101,10 @@ Recursive descent down the DOM tree.
                   r#"INSERT INTO users (uuid, name) VALUES (?, ?), (?, ?)"#,
                   rusqlite::params![CCECKMAN_UUID, "cceckman", OTHER_UUID, "ddedkman"],
               ).unwrap();
-        let TEMPLATE : &str = r#"
+        const TEMPLATE : &str = r#"
     <htmpl-query name="const_uuid">SELECT "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f" AS uuid_value;</htmpl-query>
     <htmpl-query name="get_name" :uuid="const_uuid(uuid_value)" >SELECT name FROM users WHERE uuid = :uuid;</htmpl-query>
-    <htmpl-insert query="get_name(name)" />
+    <htmpl-insert query="get_name(name)" ></htmpl-insert>
     "#;
         let result = htmpl::evaluate_template(TEMPLATE, &conn).unwrap();
         assert_eq!(result.trim(), "cceckman");
@@ -159,7 +159,7 @@ Note that, if the query returned no rows, the inner template will not appear at 
 
 ## `htmpl-attr`
 
-You may note that the aboe allows you to _insert_ DOM nodes, but not to specify their attributes.
+You may note that the above allows you to _insert_ DOM nodes, but not to specify attributes.
 
 The `htmpl-attr` sets an attribute to a variable value. An `htmpl-attr` modifies nodes:
 - that are in its current scope (i.e. under the same parent)
@@ -189,13 +189,53 @@ The `htmpl-attr` sets an attribute to a variable value. An `htmpl-attr` modifies
 #         ).unwrap();
     const TEMPLATE : &str = r#"
 <htmpl-query name="q">SELECT name, (uuid || " name") AS uuid_class FROM users ORDER BY name ASC LIMIT 1;</htmpl-query>
-<htmpl-attr select=".name" query="q(uuid_class)" attr="class" />
-<div class="name"><htmpl-insert query="q(name)" /></div>
+<htmpl-attr select=".name" query="q(uuid_class)" attr="class" ></htmpl-attr>
+<div class="name"><htmpl-insert query="q(name)"></htmpl-insert></div>
 "#;
     let result = htmpl::evaluate_template(TEMPLATE, &conn).unwrap();
     assert_eq!(result.trim(), r#"<div class="18adfb4d-6a38-4c81-b2e8-4d59e6467c9f name">cceckman</div>"#);
 #   }
 ```
+
+```rust
+#   pub const CCECKMAN_UUID: &str = "18adfb4d-6a38-4c81-b2e8-4d59e6467c9f";
+#   pub const OTHER_UUID: &str = "6de21789-6279-416c-9025-d090d407bc8c";
+
+#   fn main() {
+#     let conn = rusqlite::Connection::open_in_memory().unwrap();
+#         conn.execute(
+#                 r#"
+#     CREATE TABLE users
+#     (   uuid    TEXT PRIMARY KEY NOT NULL
+#     ,   name    TEXT NOT NULL
+#     ,   UNIQUE(uuid)
+#     ,   UNIQUE(name)
+#     );
+#                 "#, []).unwrap();
+
+#         conn.execute(
+#             r#"INSERT INTO users (uuid, name) VALUES (?, ?), (?, ?)"#,
+#             rusqlite::params![CCECKMAN_UUID, "cceckman", OTHER_UUID, "ddedkman"],
+#         ).unwrap();
+    const TEMPLATE : &str = r#"
+<htmpl-query name="q">
+    SELECT
+        name
+    ,   ("name item-" || ROW_NUMBER() OVER (ORDER BY name)) AS class
+    FROM users;
+</htmpl-query>
+<htmpl-foreach query="q"><htmpl-attr select=".name" query="q(class)" attr="class" ></htmpl-attr>
+<div class="name"><htmpl-insert query="q(name)"></htmpl-insert></div></htmpl-foreach>
+"#;
+    let result = htmpl::evaluate_template(TEMPLATE, &conn).expect("unexpected error");
+    assert_eq!(result.trim(), r#"
+<div class="name item-1">cceckman</div>
+<div class="name item-2">ddedkman</div>
+"#.trim());
+#   }
+```
+
+
 
 
 # Caveats
