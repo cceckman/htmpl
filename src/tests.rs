@@ -52,8 +52,8 @@ fn html_equal(got: impl Deref<Target = str>, want: impl Deref<Target = str>) {
         got_html,
         want_html,
         "got:\n---\n{}\n---\nwant:\n---\n{}\n---\n",
-        got.deref(),
-        want.deref()
+        got.trim(),
+        want.trim()
     );
 }
 
@@ -295,4 +295,46 @@ fn invalid_html() {
     let conn = make_test_db();
     const TEMPLATE: &str = r#"<html></div>"#;
     evaluate_template(TEMPLATE, &conn).expect_err("accepted invalid HTML structure");
+}
+
+#[test_log::test]
+fn truthy() {
+    let conn = make_test_db();
+    let template: String = format!(
+        r#"
+        <htmpl-query name="q">SELECT name, uuid = "{}" AS is_charles FROM users;</htmpl-query>
+        <htmpl-foreach query="q"><htmpl-insert query="q(name)"></htmpl-insert><htmpl-if true="q(is_charles)"> (hi Charles!)</htmpl-if>
+        </htmpl-foreach>
+        "#,
+        CCECKMAN_UUID
+    );
+    let result = evaluate_template(template, &conn).unwrap();
+    html_equal(
+        result,
+        r#"
+        cceckman (hi Charles!)
+        ddedkman
+    "#,
+    );
+}
+
+#[test_log::test]
+fn falsy() {
+    let conn = make_test_db();
+    let template: String = format!(
+        r#"
+        <htmpl-query name="q">SELECT name, uuid = "{}" AS is_charles FROM users;</htmpl-query>
+        <htmpl-foreach query="q"><htmpl-insert query="q(name)"></htmpl-insert><htmpl-if false="q(is_charles)"> (who are you?)</htmpl-if>
+        </htmpl-foreach>
+        "#,
+        CCECKMAN_UUID
+    );
+    let result = evaluate_template(template, &conn).unwrap();
+    html_equal(
+        result,
+        r#"
+        cceckman
+        ddedkman (who are you?)
+    "#,
+    );
 }

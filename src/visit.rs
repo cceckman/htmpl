@@ -11,10 +11,21 @@ use html5ever::{
     tree_builder::TreeBuilderOpts,
     QualName,
 };
-use rusqlite::types::Value;
+use rusqlite::types::{Value, ValueRef};
 use scraper::{selectable::Selectable, ElementRef, Node, Selector};
 
 use crate::Error;
+
+/// Returns true if the database value is truthy.
+fn truthy(v: ValueRef) -> bool {
+    match v {
+        ValueRef::Null => false,
+        ValueRef::Integer(i) => i != 0,
+        ValueRef::Real(f) => !(f.is_nan() || f == 0.0 || f == -0.0),
+        ValueRef::Text(s) => !s.is_empty(),
+        ValueRef::Blob(b) => !b.is_empty(),
+    }
+}
 
 /// Recursive "visit" function.
 ///
@@ -39,7 +50,6 @@ fn visit_recurse(
 
 /// Visit an element node in the tree.
 /// Delegates to specialized functions for htmpl-* elements.
-#[tracing::instrument(level = "debug", skip(scope, output_parent))]
 fn visit_element(
     scope: &mut Scope,
     source: ElementRef,
@@ -56,6 +66,7 @@ fn visit_element(
             Ok(())
         }
         "htmpl-query" => scope.do_query(source),
+        "htmpl-if" => visit_if(scope, source, output_parent),
         "htmpl-attr" => visit_attr(scope, source),
         _ => {
             let mut new = source.value().clone();
@@ -116,6 +127,37 @@ fn visit_foreach(
             visit_recurse(&mut scope, child, output_parent)?;
         }
     }
+    Ok(())
+}
+
+/// Visit an htmpl-if node.
+/// If the expression is true, recurse into the subtree.
+fn visit_if(
+    scope: &mut Scope,
+    element: ElementRef,
+    output_parent: &mut NodeMut<Node>,
+) -> Result<(), Error> {
+    let t = element.value().attr("true");
+    let f = element.value().attr("false");
+    if t.is_some() && f.is_some() {
+        return Err(Error::MultipleConditions(format!("{:?}", element)));
+    }
+
+    let specifier = t
+        .or(f)
+        .ok_or(Error::MissingAttr("htmpl-if", "true= or false="))?;
+
+    let it = scope
+        .get_single(specifier)
+        .map_err(|e| e.set_element("htmpl-if"))?;
+    let truthiness = truthy(it.into());
+    if t.is_some() && truthiness || f.is_some() && !truthiness {
+        let mut scope = scope.push();
+        for child in element.children() {
+            visit_recurse(&mut scope, child, output_parent)?;
+        }
+    }
+
     Ok(())
 }
 
@@ -231,4 +273,71 @@ pub fn evaluate_template(s: impl AsRef<str>, dbs: &DbTable) -> Result<String, Er
         return Ok(String::from_utf8(buf).unwrap());
     }
     panic!("unexpected end of function: no root element");
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::types::ValueRef;
+
+    use crate::visit::truthy;
+
+    #[test]
+    fn null_falsy() {
+        assert!(!truthy(ValueRef::Null));
+    }
+
+    #[test]
+    fn zero_falsy() {
+        assert!(!truthy(ValueRef::Integer(0)))
+    }
+
+    #[test]
+    fn one_truthy() {
+        assert!(truthy(ValueRef::Integer(1)))
+    }
+
+    #[test]
+    fn neg_one_truthy() {
+        assert!(truthy(ValueRef::Integer(-1)))
+    }
+
+    #[test]
+    fn real_zero_falsy() {
+        assert!(!truthy(ValueRef::Real(0.0)))
+    }
+
+    #[test]
+    fn real_neg_zero_falsy() {
+        assert!(!truthy(ValueRef::Real(-0.0)))
+    }
+
+    #[test]
+    fn real_truthy() {
+        assert!(truthy(ValueRef::Real(1.0)))
+    }
+
+    #[test]
+    fn nan_falsy() {
+        assert!(!truthy(ValueRef::Real(f64::NAN)))
+    }
+
+    #[test]
+    fn empty_str_falsy() {
+        assert!(!truthy(ValueRef::Text(b"")))
+    }
+
+    #[test]
+    fn nonempty_str_truthy() {
+        assert!(truthy(ValueRef::Text(b"hello world")))
+    }
+
+    #[test]
+    fn empty_blob_falsy() {
+        assert!(!truthy(ValueRef::Blob(b"")))
+    }
+
+    #[test]
+    fn nonempty_blob_truthy() {
+        assert!(truthy(ValueRef::Blob(b"hello world")))
+    }
 }
