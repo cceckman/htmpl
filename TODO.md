@@ -7,6 +7,12 @@
         - Needs a redesign: attributes are key-value, not list-of-mappings.
         - Apply via selector: OK
     - [x] htmpl-if
+    - [ ] [Rust API guidelines](https://rust-lang.github.io/api-guidelines/)
+    - [ ] `as` attribute
+    - [ ] `insert` filters
+        - [ ] no-HTML
+        - [ ] format-only
+        - [ ] Markdown
 - [ ] htmpl-wasm, the demo
     - [ ] `cargo` workspace
     - [ ] Build as WASM
