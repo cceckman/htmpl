@@ -7,6 +7,11 @@
         - Needs a redesign: attributes are key-value, not list-of-mappings.
         - Apply via selector: OK
     - [x] htmpl-if
+    - [ ] `as` attribute
+    - [ ] `insert` filters
+        - [ ] no-HTML
+        - [ ] format-only
+        - [ ] Markdown
 - [ ] htmpl-wasm, the demo
     - [ ] `cargo` workspace
     - [ ] Build as WASM

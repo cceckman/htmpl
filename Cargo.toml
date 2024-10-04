@@ -3,7 +3,10 @@ name = "htmpl"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
-license-file = "LICENSE.txt"
+description = "htmpl is a library for generating HTML files from HTML templates."
+homepage = "https://cceckman.com/r/htmpl"
+repository = "https://cceckman.com/r/htmpl"
+readme = "README.md"
 
 [dependencies]
 ego-tree = "0.6.3"
