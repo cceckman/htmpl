@@ -12,4 +12,11 @@ htmpl is a library for generating HTML files from HTML templates.
 </htmpl-foreach>
 ```
 
-See the documentation (src/lib.md) for more details.
+See the [documentation](src/lib.md) (at [docs.rs](https://docs.rs/htmpl)) for more details.
+
+> NOTE: htmpl is in the very early stages of development,
+> and will have breaking changes in the future.
+
+At the moment, it's mostly a proof-of-concept,
+so [I](https://cceckman.com) can see how far this idea lets me go.
+
