@@ -1,9 +1,10 @@
 #![doc = include_str!("lib.md")]
 #![allow(dead_code)]
 
-use std::{borrow::Cow, io};
+use std::io;
 
 mod queries;
+mod tests;
 mod visit;
 
 pub use visit::evaluate_template;
@@ -22,17 +23,21 @@ pub enum Error {
     MissingColumn(&'static str, String, String, String),
     #[error("invalid column: from element {0}, query {1} has columns {2}, wanted one column")]
     NoDefaultColumn(&'static str, String, String),
-    #[error("in invalid parameter: in element {0}, parameter {1}: has invalid format")]
+    #[error("invalid parameter: in element {0}, parameter {1}: has invalid format")]
     InvalidParameter(&'static str, String),
-    #[error("in invalid parameter: in element {0}, query has parameter {1}, but there is no corresponding attribute")]
+    #[error("invalid parameter: in element {0}, query has parameter {1}, but there is no corresponding attribute")]
     MissingParameter(&'static str, String),
+    #[error(
+        r#"multiple conditions: in element {0}, both "true" and "false" conditions are specified"#
+    )]
+    MultipleConditions(String),
 
     #[error("SQL error: in query {0}: {1}")]
     Sql(String, rusqlite::Error),
     #[error("reserializing error: {0}")]
     Serialize(io::Error),
-    #[error("html parsing error: {0}")]
-    HtmlParse(Cow<'static, str>),
+    #[error("error parsing HTML template: {0}")]
+    HtmlParse(String),
 }
 
 impl Error {
@@ -42,7 +47,8 @@ impl Error {
             Error::TemplateEval(_)
             | Error::Sql(_, _)
             | Error::Serialize(_)
-            | Error::HtmlParse(_) => self,
+            | Error::HtmlParse(_)
+            | Error::MultipleConditions(_) => self,
             Error::MissingAttr(_, attr) => Error::MissingAttr(element, attr),
             Error::MissingQuery(_, a) => Error::MissingQuery(element, a),
             Error::Cardinality(_, a, b, c) => Error::Cardinality(element, a, b, c),
@@ -83,6 +89,3 @@ impl<T> From<Error> for Result<T, Error> {
         Err(val)
     }
 }
-
-#[cfg(test)]
-mod tests;

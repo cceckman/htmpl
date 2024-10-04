@@ -5,9 +5,8 @@
     - [x] htmpl-query: parameters
     - [x] htmpl-attr
         - Needs a redesign: attributes are key-value, not list-of-mappings.
-        - Apply to the next non-attr element?
-        - No, apply via selector
-    - [ ] htmpl-if
+        - Apply via selector: OK
+    - [x] htmpl-if
 - [ ] htmpl-wasm, the demo
     - [ ] `cargo` workspace
     - [ ] Build as WASM
@@ -19,6 +18,8 @@
     - [ ] LICENSE, CONTRIBUTORS files
     - [ ] Blog post
 - [ ] htmpl-ssg, the static site generator
+    - [ ] Nested templates
+        - NB, `htmpl-attr` won't propagate through nested templates
     - [ ] Separate test cases
 - [ ] htmpl-srv, the server
 - [ ] htmpl-js, Web-native alternative
