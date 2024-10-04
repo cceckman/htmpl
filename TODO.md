@@ -7,6 +7,7 @@
         - Needs a redesign: attributes are key-value, not list-of-mappings.
         - Apply via selector: OK
     - [x] htmpl-if
+        - [ ] Test case for "empty row"
     - [ ] [Rust API guidelines](https://rust-lang.github.io/api-guidelines/)
     - [ ] `as` attribute
     - [ ] `insert` filters

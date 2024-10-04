@@ -338,3 +338,14 @@ fn falsy() {
     "#,
     );
 }
+
+#[test_log::test]
+fn empty_is_falsy() {
+    let conn = make_test_db();
+    const TEMPLATE: &str = r#"
+        <htmpl-query name="q">SELECT name FROM users WHERE name = "odysseus";</htmpl-query>
+        <htmpl-if false="q(name)">No one is here</htmpl-if>
+        "#;
+    let result = evaluate_template(TEMPLATE, &conn).unwrap();
+    html_equal(result, "No one is here");
+}
