@@ -2,6 +2,8 @@
 name = "htmpl"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+license-file = "LICENSE.txt"
 
 [dependencies]
 ego-tree = "0.6.3"
