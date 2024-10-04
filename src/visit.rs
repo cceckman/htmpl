@@ -147,10 +147,16 @@ fn visit_if(
         .or(f)
         .ok_or(Error::MissingAttr("htmpl-if", "true= or false="))?;
 
-    let it = scope
+    let maybe = scope
         .get_single(specifier)
-        .map_err(|e| e.set_element("htmpl-if"))?;
-    let truthiness = truthy(it.into());
+        .map_err(|e| e.set_element("htmpl-if"));
+    let truthiness = match maybe {
+        // A cardinality of 0 is not an error, it's just false.
+        Err(Error::Cardinality(_, _, 0, _)) => false,
+        Err(e) => return Err(e),
+        Ok(v) => truthy(v.into()),
+    };
+
     if t.is_some() && truthiness || f.is_some() && !truthiness {
         let mut scope = scope.push();
         for child in element.children() {

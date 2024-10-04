@@ -299,9 +299,10 @@ element will not be available outside of the `htmpl-if`.
 
 ### Truthiness
 
-Truthiness depends on the affinity of the type.
+- Null values are always false.
+- Queries which produce no rows are always false.
 
-Null values are always false. Beyond that, truthiness depends on the value's affinity:
+If a value is present, truthiness depends on the value's affinity:
 
 - Integer: 0 is falsy, all other values are truthy
 - String: the empty strings is falsy, all nonempty strings truthy
